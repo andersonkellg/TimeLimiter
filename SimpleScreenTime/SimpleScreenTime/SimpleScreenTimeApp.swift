@@ -64,7 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupMenu() {
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Reset (PIN)", action: #selector(resetWithPin), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Edit Today's Limit (PIN)", action: #selector(editTodayLimit), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Reset Today's Time (PIN)", action: #selector(resetWithPin), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Open Log Folder", action: #selector(openLogFolder), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
@@ -145,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.dayStart = start
             state.secondsUsedToday = 0
             state.didHitLimitToday = false
+            state.todayLimitOverride = nil  // Reset to default limit for new day
             popupsShownToday = 0  // Reset popup counter for new day
             lastPopupTime = nil
             log("NewDayReset")
@@ -152,8 +155,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func effectiveDailyLimit() -> TimeInterval {
+        // Use today's override if set, otherwise use default
+        state.todayLimitOverride ?? dailyLimitSeconds
+    }
+
     private func remainingSeconds() -> TimeInterval {
-        max(0, dailyLimitSeconds - state.secondsUsedToday)
+        max(0, effectiveDailyLimit() - state.secondsUsedToday)
     }
 
     private func updateUI() {
@@ -247,6 +255,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("AnnoyancePopup[\(popupsShownToday)/\(maxAnnoyancePopups)]")
     }
 
+    @objc private func editTodayLimit() {
+        // First, ask for PIN
+        let pinAlert = NSAlert()
+        pinAlert.messageText = "Edit Today's Time Limit"
+        pinAlert.informativeText = "Enter PIN to modify today's time limit."
+        pinAlert.alertStyle = .informational
+
+        let pinField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        pinField.placeholderString = "PIN"
+        pinAlert.accessoryView = pinField
+
+        pinAlert.addButton(withTitle: "Continue")
+        pinAlert.addButton(withTitle: "Cancel")
+
+        let pinResp = pinAlert.runModal()
+        guard pinResp == .alertFirstButtonReturn else { return }
+
+        if pinField.stringValue != hardCodedPin {
+            log("EditLimitBADPIN")
+            let fail = NSAlert()
+            fail.messageText = "Wrong PIN"
+            fail.runModal()
+            return
+        }
+
+        // PIN correct - now ask for new limit
+        let limitAlert = NSAlert()
+        limitAlert.messageText = "Set Today's Time Limit"
+
+        let currentLimit = Int(effectiveDailyLimit() / 60)
+        let used = Int(state.secondsUsedToday / 60)
+        limitAlert.informativeText = """
+        Current limit: \(currentLimit) minutes
+        Time already used: \(used) minutes
+
+        Enter new limit in minutes:
+        """
+        limitAlert.alertStyle = .informational
+
+        let limitField = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        limitField.placeholderString = "Minutes (e.g., 90)"
+        limitField.stringValue = "\(currentLimit)"
+        limitAlert.accessoryView = limitField
+
+        limitAlert.addButton(withTitle: "Set Limit")
+        limitAlert.addButton(withTitle: "Cancel")
+
+        let limitResp = limitAlert.runModal()
+        guard limitResp == .alertFirstButtonReturn else { return }
+
+        if let newMinutes = Int(limitField.stringValue), newMinutes > 0, newMinutes <= 1440 {
+            let newSeconds = TimeInterval(newMinutes * 60)
+            state.todayLimitOverride = newSeconds
+            UsageState.save(state)
+            log("LimitChangedTo[\(newMinutes)min]")
+            updateUI()
+
+            let confirm = NSAlert()
+            confirm.messageText = "Limit Updated"
+            confirm.informativeText = "Today's time limit set to \(newMinutes) minutes."
+            confirm.runModal()
+        } else {
+            let error = NSAlert()
+            error.messageText = "Invalid Input"
+            error.informativeText = "Please enter a number between 1 and 1440 minutes (24 hours)."
+            error.runModal()
+        }
+    }
+
     @objc private func resetWithPin() {
         let alert = NSAlert()
         alert.messageText = "Reset today's time?"
@@ -298,6 +375,7 @@ struct UsageState: Codable {
     var dayStart: Date
     var secondsUsedToday: TimeInterval
     var didHitLimitToday: Bool
+    var todayLimitOverride: TimeInterval?  // Optional override for today's limit
 
     static func load() -> UsageState {
         if let data = try? Data(contentsOf: stateURL),
@@ -306,7 +384,8 @@ struct UsageState: Codable {
         }
         return UsageState(dayStart: Calendar.current.startOfDay(for: Date()),
                           secondsUsedToday: 0,
-                          didHitLimitToday: false)
+                          didHitLimitToday: false,
+                          todayLimitOverride: nil)
     }
 
     static func save(_ state: UsageState) {

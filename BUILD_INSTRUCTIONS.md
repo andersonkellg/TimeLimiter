@@ -2,11 +2,24 @@
 
 This document provides step-by-step instructions for building and deploying the SimpleScreenTime macOS app.
 
+## ⚠️ Important: Public Repository Security
+
+**If you're making this repository public:**
+
+1. **Change the PIN** before sharing! Edit `SimpleScreenTimeApp.swift` line 14:
+   ```swift
+   private let hardCodedPin = "4739"  // CHANGE THIS!
+   ```
+
+2. **The code is safe to share publicly** - there are no secrets, API keys, or private credentials
+
+3. **Code signing is automatic** - the project will work on any Mac without manual signing setup
+
 ## Prerequisites
 
 - Mac Studio (or any Mac) with Xcode 15 or later
 - macOS 13 (Ventura) or later
-- Apple Developer ID (optional, but recommended for easier deployment)
+- Apple Developer ID (optional, recommended only for distribution to other people's Macs)
 
 ## Project Configuration
 
@@ -14,9 +27,9 @@ The app is already configured with:
 - **LSUIElement = YES** (menu bar only, no Dock icon)
 - **Universal Binary** support (Apple Silicon + Intel)
 - **Deployment Target**: macOS 13.0
-- **Code Signing**:
-  - Debug: Automatic (Apple Development)
-  - Release: Manual (Developer ID Application)
+- **Code Signing**: Automatic (works on any Mac, no manual setup required)
+  - For personal use: builds work immediately
+  - For distribution: can optionally use Developer ID (see below)
 
 ## Customization
 
@@ -49,13 +62,13 @@ Before building, you may want to customize:
 
 1. Open `SimpleScreenTime.xcodeproj` in Xcode
 
-2. **Configure Code Signing (if you have a Developer ID)**:
-   - Select the project → SimpleScreenTime target
-   - Go to "Signing & Capabilities"
-   - For Release configuration:
-     - Set "Signing Certificate" to "Developer ID Application"
-     - Enter your Team ID if prompted
-   - If you don't have a Developer ID, you can use automatic signing with "Apple Development"
+2. **Code Signing is Automatic** - no manual setup needed!
+   - The project uses automatic code signing
+   - Works on any Mac without configuration
+   - If you have a Developer ID and want to use it for wider distribution:
+     - Select the project → SimpleScreenTime target
+     - Go to "Signing & Capabilities"
+     - Check your Team dropdown and select your team
 
 3. **Build Settings Check**:
    - Select the project → Build Settings

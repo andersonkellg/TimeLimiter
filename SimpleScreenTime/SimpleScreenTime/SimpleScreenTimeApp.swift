@@ -1,0 +1,260 @@
+import SwiftUI
+import AppKit
+
+@main
+struct SimpleScreenTimeApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    var body: some Scene { Settings { EmptyView() } } // no windows
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+
+    // ====== CONFIG ======
+    private let dailyLimitSeconds: TimeInterval = 60 * 60  // 1 hour
+    private let hardCodedPin = "4739"                     // change this
+    private let blinkWhenOverLimit = true
+    // ====================
+
+    private var statusItem: NSStatusItem!
+    private var timer: Timer?
+
+    private var state = UsageState.load()
+    private var lastTick = Date()
+    private var isCounting = true
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setupStatusItem()
+        setupMenu()
+        setupObservers()
+
+        log("AppLaunched")
+        normalizeForToday()
+
+        lastTick = Date()
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.tick()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        log("AppTerminating")
+        UsageState.save(state)
+    }
+
+    private func setupStatusItem() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.title = "—m"
+    }
+
+    private func setupMenu() {
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Reset (PIN)", action: #selector(resetWithPin), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Open Log Folder", action: #selector(openLogFolder), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+        statusItem.menu = menu
+    }
+
+    private func setupObservers() {
+        let wnc = NSWorkspace.shared.notificationCenter
+
+        // Sleep/wake
+        wnc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.isCounting = false
+            self?.log("WillSleep")
+        }
+        wnc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.isCounting = true
+            self?.lastTick = Date()
+            self?.log("DidWake")
+        }
+
+        // Session active/inactive (reliable across macOS 13+)
+        wnc.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.isCounting = false
+            self?.log("SessionResignActive")
+        }
+        wnc.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.isCounting = true
+            self?.lastTick = Date()
+            self?.log("SessionBecomeActive")
+        }
+
+        // Optional lock/unlock distributed notifications (helpful when available)
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.isCounting = false
+            self?.log("ScreenLocked")
+        }
+
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.isCounting = true
+            self?.lastTick = Date()
+            self?.log("ScreenUnlocked")
+        }
+    }
+
+    private func tick() {
+        normalizeForToday()
+
+        let now = Date()
+        defer { lastTick = now }
+
+        if isCounting {
+            let dt = now.timeIntervalSince(lastTick)
+            if dt > 0 && dt < 10 { // ignore huge jumps
+                state.secondsUsedToday += dt
+            }
+        }
+
+        if remainingSeconds() <= 0 && !state.didHitLimitToday {
+            state.didHitLimitToday = true
+            log("LimitReached")
+        }
+
+        UsageState.save(state)
+        updateUI()
+    }
+
+    private func normalizeForToday() {
+        let start = Calendar.current.startOfDay(for: Date())
+        if state.dayStart != start {
+            state.dayStart = start
+            state.secondsUsedToday = 0
+            state.didHitLimitToday = false
+            log("NewDayReset")
+            UsageState.save(state)
+        }
+    }
+
+    private func remainingSeconds() -> TimeInterval {
+        max(0, dailyLimitSeconds - state.secondsUsedToday)
+    }
+
+    private func updateUI() {
+        let rem = remainingSeconds()
+        let mins = Int(ceil(rem / 60.0)) // show whole minutes remaining
+
+        let over = (rem <= 0)
+        let blinkOn = (Int(Date().timeIntervalSince1970) % 2 == 0)
+
+        if blinkWhenOverLimit && over && !blinkOn {
+            statusItem.button?.title = " "
+        } else {
+            statusItem.button?.title = "\(mins)m"
+        }
+    }
+
+    @objc private func resetWithPin() {
+        let alert = NSAlert()
+        alert.messageText = "Reset today's time?"
+        alert.informativeText = "Enter PIN to reset usage for today."
+        alert.alertStyle = .warning
+
+        let pinField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        pinField.placeholderString = "PIN"
+        alert.accessoryView = pinField
+
+        alert.addButton(withTitle: "Reset")
+        alert.addButton(withTitle: "Cancel")
+
+        let resp = alert.runModal()
+        guard resp == .alertFirstButtonReturn else { return }
+
+        if pinField.stringValue == hardCodedPin {
+            state.secondsUsedToday = 0
+            state.didHitLimitToday = false
+            UsageState.save(state)
+            log("ManualResetOK")
+            updateUI()
+        } else {
+            log("ManualResetBADPIN")
+            let fail = NSAlert()
+            fail.messageText = "Wrong PIN"
+            fail.runModal()
+        }
+    }
+
+    @objc private func openLogFolder() {
+        NSWorkspace.shared.open(Logger.logFileURL.deletingLastPathComponent())
+    }
+
+    @objc private func quit() {
+        NSApp.terminate(nil)
+    }
+
+    private func log(_ event: String) {
+        Logger.append(event: event,
+                      used: Int(state.secondsUsedToday),
+                      remaining: Int(remainingSeconds()))
+    }
+}
+
+struct UsageState: Codable {
+    var dayStart: Date
+    var secondsUsedToday: TimeInterval
+    var didHitLimitToday: Bool
+
+    static func load() -> UsageState {
+        if let data = try? Data(contentsOf: stateURL),
+           let s = try? JSONDecoder().decode(UsageState.self, from: data) {
+            return s
+        }
+        return UsageState(dayStart: Calendar.current.startOfDay(for: Date()),
+                          secondsUsedToday: 0,
+                          didHitLimitToday: false)
+    }
+
+    static func save(_ state: UsageState) {
+        do {
+            try FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(state)
+            try data.write(to: stateURL, options: [.atomic])
+        } catch {
+            // best-effort
+        }
+    }
+
+    private static var appSupportURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("SimpleScreenTime", isDirectory: true)
+    }
+    private static var stateURL: URL {
+        appSupportURL.appendingPathComponent("state.json")
+    }
+}
+
+enum Logger {
+    static var logDirURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("SimpleScreenTime", isDirectory: true)
+    }
+    static var logFileURL: URL {
+        logDirURL.appendingPathComponent("events.log")
+    }
+
+    static func append(event: String, used: Int, remaining: Int) {
+        do {
+            try FileManager.default.createDirectory(at: logDirURL, withIntermediateDirectories: true)
+            let ts = ISO8601DateFormatter().string(from: Date())
+            let line = "\(ts)\t\(event)\tused=\(used)s\tremaining=\(remaining)s\n"
+            if FileManager.default.fileExists(atPath: logFileURL.path) {
+                let h = try FileHandle(forWritingTo: logFileURL)
+                try h.seekToEnd()
+                h.write(line.data(using: .utf8)!)
+                try h.close()
+            } else {
+                try line.write(to: logFileURL, atomically: true, encoding: .utf8)
+            }
+        } catch {
+            // best-effort
+        }
+    }
+}

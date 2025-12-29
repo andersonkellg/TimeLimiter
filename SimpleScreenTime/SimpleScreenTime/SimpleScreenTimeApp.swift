@@ -10,11 +10,11 @@ struct SimpleScreenTimeApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ====== CONFIG ======
-    private let dailyLimitSeconds: TimeInterval = 60 * 60  // 1 hour
-    private let hardCodedPin = "0000"                     // change this
+    private let dailyLimitSeconds: TimeInterval = 60 * 60  // 1 hour (change to desired seconds)
+    private let hardCodedPin = "0000"                      // CHANGE THIS before deployment!
     private let blinkWhenOverLimit = true
-    private let showBackgroundColor = true                // colored background
-    private let maxAnnoyancePopups = 5                    // number of popups before stopping
+    private let showBackgroundColor = true                 // colored background
+    private let maxAnnoyancePopups = 5                     // number of popups before stopping
     // ====================
 
     private var statusItem: NSStatusItem!

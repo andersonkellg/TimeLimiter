@@ -2,18 +2,20 @@
 
 This document provides step-by-step instructions for building and deploying the SimpleScreenTime macOS app.
 
-## ⚠️ Important: Public Repository Security
+## ⚠️ Important: Security Before Deployment
 
-**If you're making this repository public:**
+**Before deploying to a child's account:**
 
-1. **Change the PIN** before sharing! Edit `SimpleScreenTimeApp.swift` line 14:
+1. **Change the default PIN!** Edit `SimpleScreenTimeApp.swift` line 14:
    ```swift
-   private let hardCodedPin = "4739"  // CHANGE THIS!
+   private let hardCodedPin = "0000"  // CHANGE THIS to something only you know!
    ```
 
-2. **The code is safe to share publicly** - there are no secrets, API keys, or private credentials
+2. **Keep your PIN private** - Don't share it with the child or commit it to public repositories
 
-3. **Code signing is automatic** - the project will work on any Mac without manual signing setup
+3. **Code signing is automatic** - The project works on any Mac without manual signing setup
+
+4. **No secrets in code** - The repository is safe to share publicly (just change the PIN first!)
 
 ## Prerequisites
 
@@ -40,9 +42,9 @@ Before building, you may want to customize:
    - Line 13: `private let dailyLimitSeconds: TimeInterval = 60 * 60`
    - Change to desired seconds (e.g., `90 * 60` for 90 minutes)
 
-2. **PIN Code** (default: "4739")
-   - Same file, line 14: `private let hardCodedPin = "4739"`
-   - Change to your desired PIN
+2. **PIN Code** (default: "0000")
+   - Same file, line 14: `private let hardCodedPin = "0000"`
+   - **IMPORTANT:** Change to your own secret PIN before deployment!
 
 3. **Bundle Identifier** (recommended)
    - Open `SimpleScreenTime.xcodeproj` in Xcode

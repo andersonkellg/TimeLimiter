@@ -1,427 +1,297 @@
-# TimeLimiter
+# SimpleScreenTime
 
-# SimpleScreenTime (macOS 13+) — Lightweight Menu Bar Countdown + Audit Log
+<div align="center">
 
-This document captures the plan, design decisions, and a working code baseline for a **very simple**, **low-overhead** “Screen Time reminder” app for a child macOS account.
+**A lightweight macOS menu bar app for managing daily screen time**
 
-Goal: Show a **menu bar countdown in minutes** (e.g., `45m`) that:
-- Counts down **cumulative time per day**
-- Tracks **“time actively logged in + unlocked”**
-- **Stops** when the Mac is **locked**, **asleep**, **logged out**, or **shut down**
-- When time is exhausted, it **blinks annoyingly** (but does **not** block apps)
-- Provides a **Reset Today** action protected by a **hard-coded PIN**
-- Writes an **audit log** so parent can review behavior and correct if needed
-- Works on **macOS 13 (Ventura) onward**
-- Built on a Mac Studio with Xcode and copied to an Intel MacBook
+[![macOS](https://img.shields.io/badge/macOS-13.0+-blue.svg)](https://www.apple.com/macos/)
+[![Swift](https://img.shields.io/badge/Swift-5.0-orange.svg)](https://swift.org/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+<img src="https://img.shields.io/badge/Status-Active-success" alt="Active">
+
+</div>
 
 ---
 
-## Why this approach
+## Overview
 
-Apple Screen Time can enforce limits, but it doesn’t provide a persistent “time left” badge in the menu bar. This app is intentionally **non-enforcing** and **non-invasive**:
-- Helps kids self-regulate (“reminder”)
-- Preserves full functionality for emergencies
-- Gives parents an audit trail without full management overhead
+SimpleScreenTime is a non-intrusive macOS menu bar application designed to help users (especially children) self-regulate their daily computer usage. Unlike restrictive parental controls, this app provides **gentle reminders** through a visible countdown timer without blocking functionality.
 
----
+### Key Features
 
-## Key architectural decisions
-
-### 1) UI: Menu bar only
-- Uses `NSStatusBar` / `NSStatusItem` to render a text label in the macOS menu bar (top right).
-- No windows. Optional: hide Dock icon via `LSUIElement`.
-
-### 2) Measurement: “Active session time”
-We count time when:
-- User session is active (unlocked / interactive)
-- Mac is awake
-
-We pause time when:
-- Screen is locked
-- Session resigns active (fast user switching, lock, etc.)
-- System sleeps
-
-> We are **not** doing mouse/keyboard idleness detection to keep it simple and permission-free.
-
-### 3) Persistence: Minimal JSON state per user
-- Store daily usage state in:
-  - `~/Library/Application Support/SimpleScreenTime/state.json`
-- Store append-only audit log in:
-  - `~/Library/Application Support/SimpleScreenTime/events.log`
-
-### 4) Tamper stance
-Not trying to defeat a determined user.
-- Child can quit or force-quit; we log restart gaps implicitly and record explicit quit events when possible.
-- PIN gate is “good enough” (hard-coded).
-
-### 5) macOS 13+ compatibility strategy
-- Use documented notifications:
-  - `NSWorkspace.willSleepNotification` / `didWakeNotification`
-  - `NSWorkspace.sessionDidResignActiveNotification` / `sessionDidBecomeActiveNotification`
-- Optionally also observe distributed lock/unlock notifications (useful but not formally documented):
-  - `com.apple.screenIsLocked` / `com.apple.screenIsUnlocked`
-- The **session active/inactive** pair is the reliable backbone for 13+.
+- 🕐 **Visual Countdown Timer** - Menu bar shows remaining time in minutes
+- 🎨 **Color-Coded Status** - Green → Yellow → Orange → Red as time decreases
+- ⏸️ **Smart Tracking** - Only counts active, unlocked screen time
+- 🔐 **PIN Protection** - Secure admin controls for resets and limit changes
+- 📊 **Audit Logging** - Track usage patterns and reset events
+- 🔔 **Progressive Alerts** - Configurable popup reminders when time expires
+- 💻 **Universal Binary** - Supports both Apple Silicon and Intel Macs
 
 ---
 
-## Build + Distribution (Mac Studio → Intel MacBook)
+## Why SimpleScreenTime?
 
-Because the MacBook is Intel (2017), build a **Universal** app.
+Apple's Screen Time can enforce hard limits, but it lacks visual feedback and can be frustrating during legitimate use. SimpleScreenTime takes a different approach:
 
-### 1) Configure Universal build
-In Xcode (Target → Build Settings):
-- **Architectures**: `Standard Architectures (Apple Silicon + Intel)`  
-  (Typically `$(ARCHS_STANDARD)`)
-- **Build Active Architecture Only**:
-  - Debug: Yes is fine
-  - **Release: No** (important for universal export)
-
-### 2) Signing (Paid Developer Account)
-Use **Developer ID Application** signing for easiest Gatekeeper experience on the MacBook.
-
-In Xcode (Target → Signing & Capabilities):
-- “Automatically manage signing” can be ON
-- Choose **Developer ID** for release/distribution if offered
-- If needed, set the signing cert to **Developer ID Application**
-
-> For personal distribution, notarization is optional, but **Developer ID signing** reduces friction a lot.
-
-### 3) Export the .app
-Preferred: Archive & export:
-- `Product → Archive`
-- Xcode Organizer → Archives → select build → **Distribute App**
-- Choose **Copy App** (or “Developer ID” style export depending on Xcode UI)
-
-### 4) Transfer to MacBook
-Copy the exported `.app` to the MacBook (AirDrop, file share, USB).
-
-### 5) Install on the MacBook
-- Move app to `/Applications` (or `~/Applications`)
-- First run might prompt Gatekeeper:
-  - Right-click → **Open**
-  - Or System Settings → Privacy & Security → **Open Anyway**
-
-### 6) Auto-start on login (child account)
-On the **child macOS user**:
-- System Settings → General → **Login Items**
-- Add the app to “Open at Login”
+✅ **Self-Regulation** - Helps kids build awareness and self-control
+✅ **Emergency-Friendly** - Never blocks access for important tasks
+✅ **Transparent** - Always visible in menu bar, no surprises
+✅ **Parent-Friendly** - Audit logs show actual usage and compliance
+✅ **Zero Permissions** - No accessibility or screen recording required
 
 ---
 
-## App Behavior Spec
+## Screenshots
 
-### Display
-- Menu bar text: **minutes remaining**: `90m`, `45m`, etc.
-- Uses ceiling rounding so it doesn’t show `0m` too early (e.g., 1–59 seconds left → `1m`).
+### Normal Operation
+```
+Menu Bar: [60m] 🟢     →  [15m] 🟡  →  [5m] 🟠  →  [⏰ TIME'S UP! ⏰] 🔴
+```
 
-### Counting rules
-- Counts while `isCounting == true`
-- Pauses on:
-  - sleep
-  - session inactive / locked
-- Resumes on:
-  - wake
-  - session active / unlocked
-
-### Annoy mode
-- When remaining time hits 0:
-  - Menu bar label blinks by alternating between `" "` and `"0m"` every second
-
-### Reset
-- Menu action: `Reset (PIN)`
-- PIN prompt via `NSSecureTextField`
-- On correct PIN:
-  - reset today’s used seconds to 0
-  - clear limit-reached flag
-  - log event
-
-### Audit log
-Events like:
-- `AppLaunched`
-- `SessionResignActive`, `SessionBecomeActive`
-- `WillSleep`, `DidWake`
-- `LimitReached`
-- `ManualResetOK`, `ManualResetBADPIN`
+### Menu Options
+- Edit Today's Limit (PIN)
+- Reset Today's Time (PIN)
+- Open Log Folder
+- Quit
 
 ---
 
-## Xcode Project Setup Notes
+## Quick Start
 
-### Hide Dock icon (menu-bar-only)
-Set in the target’s Info (Info.plist):
-- **Application is agent (UIElement)** = `YES`
-- (Key: `LSUIElement`)
+### Prerequisites
+- macOS 13.0 (Ventura) or later
+- Xcode 15+ (for building from source)
 
-### No extra permissions required
-This design doesn’t require Accessibility or Screen Recording permissions.
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/yourusername/TimeLimiter.git
+   cd TimeLimiter
+   ```
+
+2. **Configure your settings** (Optional)
+
+   Open `SimpleScreenTime/SimpleScreenTime/SimpleScreenTimeApp.swift` and customize:
+   ```swift
+   private let dailyLimitSeconds: TimeInterval = 60 * 60  // 1 hour
+   private let hardCodedPin = "0000"                      // CHANGE THIS!
+   private let maxAnnoyancePopups = 5                     // popup limit
+   ```
+
+3. **Build the app**
+   ```bash
+   cd SimpleScreenTime
+   open SimpleScreenTime.xcodeproj
+   ```
+   - In Xcode: Product → Build (⌘B)
+   - For distribution: Product → Archive
+
+4. **Install and run**
+   - Copy `SimpleScreenTime.app` to `/Applications`
+   - Right-click → Open (first time only)
+   - Add to Login Items for auto-start
+
+See [BUILD_INSTRUCTIONS.md](BUILD_INSTRUCTIONS.md) for detailed build and deployment instructions.
 
 ---
 
-## Code (Single-file baseline)
+## Configuration
 
-Create a new **macOS App (SwiftUI)** project and replace the generated files with this single file
-(or keep the `@main` file and paste the contents accordingly).
+All settings are configured at compile time in `SimpleScreenTimeApp.swift`:
 
-> Change `dailyLimitSeconds` and `hardCodedPin` as desired.
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `dailyLimitSeconds` | 3600 (1 hour) | Daily screen time allowance in seconds |
+| `hardCodedPin` | "0000" | PIN for admin functions (CHANGE THIS!) |
+| `blinkWhenOverLimit` | true | Blink menu bar when time expires |
+| `showBackgroundColor` | true | Color-coded background indicators |
+| `maxAnnoyancePopups` | 5 | Maximum daily popup reminders |
 
+---
+
+## How It Works
+
+### Time Tracking
+- ✅ Counts time when Mac is **unlocked** and **awake**
+- ⏸️ Pauses when **locked**, **asleep**, or **logged out**
+- 🔄 Resets automatically at **midnight** each day
+
+### Visual Feedback
+- **> 15 minutes** - Green background
+- **≤ 15 minutes** - Yellow background
+- **≤ 5 minutes** - Orange background
+- **0 minutes** - Red background, flashing text, popup alerts
+
+### Admin Controls
+
+#### Edit Today's Limit
+Adjust the time limit for the current day without resetting usage:
+- Enter PIN → Set new limit in minutes
+- Useful for earned extra time or special occasions
+
+#### Reset Today's Time
+Reset the usage counter back to zero:
+- Enter PIN → Confirm reset
+- Starts fresh countdown with current limit
+
+### Audit Logging
+All events are logged to:
+```
+~/Library/Application Support/SimpleScreenTime/events.log
+```
+
+Example log entries:
+```
+2025-01-15T14:23:45Z    AppLaunched              used=0s       remaining=3600s
+2025-01-15T15:30:12Z    ScreenLocked             used=4027s    remaining=0s
+2025-01-15T16:45:00Z    LimitReached             used=3600s    remaining=0s
+2025-01-15T17:00:00Z    AnnoyancePopup[1/5]      used=3900s    remaining=0s
+2025-01-15T18:00:00Z    ManualResetOK            used=0s       remaining=3600s
+```
+
+---
+
+## Architecture
+
+### Technology Stack
+- **Language**: Swift 5.0
+- **Framework**: AppKit (NSStatusBar)
+- **UI**: SwiftUI + AppKit hybrid
+- **Persistence**: JSON file storage
+- **Deployment**: macOS 13.0+
+
+### Design Principles
+
+1. **Menu Bar Only** - Uses `LSUIElement` to hide from Dock
+2. **Minimal Permissions** - No accessibility or screen recording required
+3. **Local Storage** - All data stored in user's Application Support folder
+4. **Universal Binary** - Built for both ARM64 and x86_64 architectures
+5. **Automatic Signing** - Works on any Mac without manual code signing setup
+
+### File Structure
+```
+SimpleScreenTime/
+├── SimpleScreenTime.xcodeproj/    # Xcode project
+├── SimpleScreenTime/
+│   ├── SimpleScreenTimeApp.swift  # Main application code
+│   ├── Info.plist                 # App configuration
+│   └── Assets.xcassets/           # App icons
+└── .gitignore
+```
+
+---
+
+## Advanced Usage
+
+### Auto-Start on Login
+
+**On the child's macOS account:**
+1. System Settings → General → Login Items
+2. Click "+" and select SimpleScreenTime.app
+3. Ensure it's enabled
+
+### Distribution to Other Macs
+
+For Intel MacBook deployment from Apple Silicon Mac:
+1. Build with `ARCHS = $(ARCHS_STANDARD)` (universal binary)
+2. Archive and export the app
+3. Transfer via AirDrop, USB, or network
+4. First run: Right-click → Open to bypass Gatekeeper
+
+See [BUILD_INSTRUCTIONS.md](BUILD_INSTRUCTIONS.md) for complete details.
+
+---
+
+## Troubleshooting
+
+### App won't start
+- Check macOS version (must be 13.0+)
+- View Console.app for crash logs
+- Ensure app is in `/Applications` or `~/Applications`
+
+### Gatekeeper blocking
+```bash
+# Remove quarantine attribute
+xattr -dr com.apple.quarantine /Applications/SimpleScreenTime.app
+```
+
+Or: System Settings → Privacy & Security → Open Anyway
+
+### Time not counting
+- Check if Mac is unlocked (locks pause the timer)
+- Verify app is running (check menu bar)
+- Review logs: Open Log Folder from menu
+
+### Need to change PIN
+Edit `SimpleScreenTimeApp.swift` line 14 and rebuild:
 ```swift
-import SwiftUI
-import AppKit
+private let hardCodedPin = "YOUR_NEW_PIN"
+```
 
-@main
-struct SimpleScreenTimeApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    var body: some Scene { Settings { EmptyView() } } // no windows
-}
+---
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+## Contributing
 
-    // ====== CONFIG ======
-    private let dailyLimitSeconds: TimeInterval = 60 * 60  // 1 hour
-    private let hardCodedPin = "4739"                     // change this
-    private let blinkWhenOverLimit = true
-    // ====================
+Contributions are welcome! This is a simple, focused tool - please keep enhancements aligned with the core philosophy of non-intrusive monitoring.
 
-    private var statusItem: NSStatusItem!
-    private var timer: Timer?
+### Development Setup
+```bash
+git clone https://github.com/yourusername/TimeLimiter.git
+cd TimeLimiter/SimpleScreenTime
+open SimpleScreenTime.xcodeproj
+```
 
-    private var state = UsageState.load()
-    private var lastTick = Date()
-    private var isCounting = true
+### Code Style
+- Swift standard style
+- Minimal dependencies
+- Clear comments for configuration options
+- Maintain backward compatibility
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        setupStatusItem()
-        setupMenu()
-        setupObservers()
+---
 
-        log("AppLaunched")
-        normalizeForToday()
+## Security Notes
 
-        lastTick = Date()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.tick()
-        }
-    }
+⚠️ **Before making this repository public or sharing:**
 
-    func applicationWillTerminate(_ notification: Notification) {
-        log("AppTerminating")
-        UsageState.save(state)
-    }
+1. **Change the default PIN** from "0000" to something private
+2. Do not commit your personal PIN to version control
+3. Consider using environment variables or a separate config file for sensitive settings
 
-    private func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "—m"
-    }
+This app is designed for trust-based monitoring, not security enforcement. A determined user can:
+- Force quit the app
+- Modify system time
+- Delete state files
 
-    private func setupMenu() {
-        let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Reset (PIN)", action: #selector(resetWithPin), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Open Log Folder", action: #selector(openLogFolder), keyEquivalent: ""))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
-        statusItem.menu = menu
-    }
+The audit log helps detect these behaviors.
 
-    private func setupObservers() {
-        let wnc = NSWorkspace.shared.notificationCenter
+---
 
-        // Sleep/wake
-        wnc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.isCounting = false
-            self?.log("WillSleep")
-        }
-        wnc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.isCounting = true
-            self?.lastTick = Date()
-            self?.log("DidWake")
-        }
+## License
 
-        // Session active/inactive (reliable across macOS 13+)
-        wnc.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.isCounting = false
-            self?.log("SessionResignActive")
-        }
-        wnc.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.isCounting = true
-            self?.lastTick = Date()
-            self?.log("SessionBecomeActive")
-        }
+MIT License - See [LICENSE](LICENSE) file for details.
 
-        // Optional lock/unlock distributed notifications (helpful when available)
-        DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name("com.apple.screenIsLocked"),
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.isCounting = false
-            self?.log("ScreenLocked")
-        }
+---
 
-        DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name("com.apple.screenIsUnlocked"),
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.isCounting = true
-            self?.lastTick = Date()
-            self?.log("ScreenUnlocked")
-        }
-    }
+## Acknowledgments
 
-    private func tick() {
-        normalizeForToday()
+Built with ❤️ for parents who want to teach self-regulation rather than enforce restriction.
 
-        let now = Date()
-        defer { lastTick = now }
+Inspired by the need for transparent, respectful screen time management tools.
 
-        if isCounting {
-            let dt = now.timeIntervalSince(lastTick)
-            if dt > 0 && dt < 10 { // ignore huge jumps
-                state.secondsUsedToday += dt
-            }
-        }
+---
 
-        if remainingSeconds() <= 0 && !state.didHitLimitToday {
-            state.didHitLimitToday = true
-            log("LimitReached")
-        }
+## Support
 
-        UsageState.save(state)
-        updateUI()
-    }
+- 📖 [Build Instructions](BUILD_INSTRUCTIONS.md)
+- 🐛 [Issue Tracker](https://github.com/yourusername/TimeLimiter/issues)
+- 💬 [Discussions](https://github.com/yourusername/TimeLimiter/discussions)
 
-    private func normalizeForToday() {
-        let start = Calendar.current.startOfDay(for: Date())
-        if state.dayStart != start {
-            state.dayStart = start
-            state.secondsUsedToday = 0
-            state.didHitLimitToday = false
-            log("NewDayReset")
-            UsageState.save(state)
-        }
-    }
+---
 
-    private func remainingSeconds() -> TimeInterval {
-        max(0, dailyLimitSeconds - state.secondsUsedToday)
-    }
+<div align="center">
 
-    private func updateUI() {
-        let rem = remainingSeconds()
-        let mins = Int(ceil(rem / 60.0)) // show whole minutes remaining
+**Made for macOS • Built with Swift • Designed for Trust**
 
-        let over = (rem <= 0)
-        let blinkOn = (Int(Date().timeIntervalSince1970) % 2 == 0)
-
-        if blinkWhenOverLimit && over && !blinkOn {
-            statusItem.button?.title = " "
-        } else {
-            statusItem.button?.title = "\(mins)m"
-        }
-    }
-
-    @objc private func resetWithPin() {
-        let alert = NSAlert()
-        alert.messageText = "Reset today's time?"
-        alert.informativeText = "Enter PIN to reset usage for today."
-        alert.alertStyle = .warning
-
-        let pinField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
-        pinField.placeholderString = "PIN"
-        alert.accessoryView = pinField
-
-        alert.addButton(withTitle: "Reset")
-        alert.addButton(withTitle: "Cancel")
-
-        let resp = alert.runModal()
-        guard resp == .alertFirstButtonReturn else { return }
-
-        if pinField.stringValue == hardCodedPin {
-            state.secondsUsedToday = 0
-            state.didHitLimitToday = false
-            UsageState.save(state)
-            log("ManualResetOK")
-            updateUI()
-        } else {
-            log("ManualResetBADPIN")
-            let fail = NSAlert()
-            fail.messageText = "Wrong PIN"
-            fail.runModal()
-        }
-    }
-
-    @objc private func openLogFolder() {
-        NSWorkspace.shared.open(Logger.logFileURL.deletingLastPathComponent())
-    }
-
-    @objc private func quit() {
-        NSApp.terminate(nil)
-    }
-
-    private func log(_ event: String) {
-        Logger.append(event: event,
-                      used: Int(state.secondsUsedToday),
-                      remaining: Int(remainingSeconds()))
-    }
-}
-
-struct UsageState: Codable {
-    var dayStart: Date
-    var secondsUsedToday: TimeInterval
-    var didHitLimitToday: Bool
-
-    static func load() -> UsageState {
-        if let data = try? Data(contentsOf: stateURL),
-           let s = try? JSONDecoder().decode(UsageState.self, from: data) {
-            return s
-        }
-        return UsageState(dayStart: Calendar.current.startOfDay(for: Date()),
-                          secondsUsedToday: 0,
-                          didHitLimitToday: false)
-    }
-
-    static func save(_ state: UsageState) {
-        do {
-            try FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(state)
-            try data.write(to: stateURL, options: [.atomic])
-        } catch {
-            // best-effort
-        }
-    }
-
-    private static var appSupportURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("SimpleScreenTime", isDirectory: true)
-    }
-    private static var stateURL: URL {
-        appSupportURL.appendingPathComponent("state.json")
-    }
-}
-
-enum Logger {
-    static var logDirURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("SimpleScreenTime", isDirectory: true)
-    }
-    static var logFileURL: URL {
-        logDirURL.appendingPathComponent("events.log")
-    }
-
-    static func append(event: String, used: Int, remaining: Int) {
-        do {
-            try FileManager.default.createDirectory(at: logDirURL, withIntermediateDirectories: true)
-            let ts = ISO8601DateFormatter().string(from: Date())
-            let line = "\(ts)\t\(event)\tused=\(used)s\tremaining=\(remaining)s\n"
-            if FileManager.default.fileExists(atPath: logFileURL.path) {
-                let h = try FileHandle(forWritingTo: logFileURL)
-                try h.seekToEnd()
-                h.write(line.data(using: .utf8)!)
-                try h.close()
-            } else {
-                try line.write(to: logFileURL, atomically: true, encoding: .utf8)
-            }
-        } catch {
-            // best-effort
-        }
-    }
-}
+</div>

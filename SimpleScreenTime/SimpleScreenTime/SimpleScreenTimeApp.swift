@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let dailyLimitSeconds: TimeInterval = 60 * 60  // 1 hour
     private let hardCodedPin = "4739"                     // change this
     private let blinkWhenOverLimit = true
+    private let showBackgroundColor = true                // colored background
+    private let maxAnnoyancePopups = 5                    // number of popups before stopping
     // ====================
 
     private var statusItem: NSStatusItem!
@@ -21,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var state = UsageState.load()
     private var lastTick = Date()
     private var isCounting = true
+    private var popupsShownToday = 0
+    private var lastPopupTime: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -44,6 +48,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "—m"
+
+        // Add visual styling
+        if let button = statusItem.button {
+            button.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
+
+            // Add colored background and border
+            if showBackgroundColor {
+                button.wantsLayer = true
+                button.layer?.cornerRadius = 4
+                button.layer?.borderWidth = 1.5
+            }
+        }
     }
 
     private func setupMenu() {
@@ -129,6 +145,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.dayStart = start
             state.secondsUsedToday = 0
             state.didHitLimitToday = false
+            popupsShownToday = 0  // Reset popup counter for new day
+            lastPopupTime = nil
             log("NewDayReset")
             UsageState.save(state)
         }
@@ -145,11 +163,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let over = (rem <= 0)
         let blinkOn = (Int(Date().timeIntervalSince1970) % 2 == 0)
 
-        if blinkWhenOverLimit && over && !blinkOn {
-            statusItem.button?.title = " "
+        guard let button = statusItem.button else { return }
+
+        if over {
+            // Time is up - make it VERY annoying
+            if blinkWhenOverLimit && !blinkOn {
+                button.title = "                    " // long empty space
+            } else {
+                button.title = "⏰ TIME'S UP! ⏰" // much longer, more noticeable
+            }
+
+            // Red background and border when time is up
+            if showBackgroundColor {
+                button.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.8).cgColor
+                button.layer?.borderColor = NSColor.systemRed.cgColor
+            }
+
+            // Show periodic popups
+            showAnnoyingPopupIfNeeded()
+
+        } else if mins <= 5 {
+            // Warning mode - orange
+            button.title = "\(mins)m"
+            if showBackgroundColor {
+                button.layer?.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.6).cgColor
+                button.layer?.borderColor = NSColor.systemOrange.cgColor
+            }
+
+        } else if mins <= 15 {
+            // Caution mode - yellow
+            button.title = "\(mins)m"
+            if showBackgroundColor {
+                button.layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.5).cgColor
+                button.layer?.borderColor = NSColor.systemYellow.cgColor
+            }
+
         } else {
-            statusItem.button?.title = "\(mins)m"
+            // Normal mode - green
+            button.title = "\(mins)m"
+            if showBackgroundColor {
+                button.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.4).cgColor
+                button.layer?.borderColor = NSColor.systemGreen.cgColor
+            }
         }
+    }
+
+    private func showAnnoyingPopupIfNeeded() {
+        let now = Date()
+
+        // Only show up to maxAnnoyancePopups times per day
+        if popupsShownToday >= maxAnnoyancePopups {
+            return
+        }
+
+        // Show popup every 60 seconds
+        if let lastPopup = lastPopupTime {
+            if now.timeIntervalSince(lastPopup) < 60 {
+                return
+            }
+        }
+
+        lastPopupTime = now
+        popupsShownToday += 1
+
+        let remaining = maxAnnoyancePopups - popupsShownToday
+
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "⏰ SCREEN TIME IS UP! ⏰"
+        alert.informativeText = """
+        You've used all your screen time for today.
+
+        Please take a break from the computer.
+
+        Popups remaining today: \(remaining)
+        """
+        alert.addButton(withTitle: "OK, I understand")
+
+        // Make it modal and bring to front
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+
+        log("AnnoyancePopup[\(popupsShownToday)/\(maxAnnoyancePopups)]")
     }
 
     @objc private func resetWithPin() {
@@ -171,6 +266,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if pinField.stringValue == hardCodedPin {
             state.secondsUsedToday = 0
             state.didHitLimitToday = false
+            popupsShownToday = 0  // Reset popup counter
+            lastPopupTime = nil
             UsageState.save(state)
             log("ManualResetOK")
             updateUI()

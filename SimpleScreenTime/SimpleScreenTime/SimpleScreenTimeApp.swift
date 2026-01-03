@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import AVFoundation
+import CoreAudio
 
 @main
 struct SimpleScreenTimeApp: App {
@@ -15,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let blinkWhenOverLimit = true
     private let showBackgroundColor = true                 // colored background
     private let maxAnnoyancePopups = 5                     // number of popups before stopping
+    private let playAlertSound = true                      // play sound when time is up
+    private let alertVolumeLevel: Float = 0.5              // 0.0 to 1.0 (50% volume for alert)
     // ====================
 
     private var statusItem: NSStatusItem!
@@ -25,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isCounting = true
     private var popupsShownToday = 0
     private var lastPopupTime: Date?
+    private var audioPlayer: AVAudioPlayer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -234,6 +239,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastPopupTime = now
         popupsShownToday += 1
 
+        // Play alert sound with volume override
+        if playAlertSound {
+            playAlertSoundWithVolumeOverride()
+        }
+
         let remaining = maxAnnoyancePopups - popupsShownToday
 
         let alert = NSAlert()
@@ -253,6 +263,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
 
         log("AnnoyancePopup[\(popupsShownToday)/\(maxAnnoyancePopups)]")
+    }
+
+    private func playAlertSoundWithVolumeOverride() {
+        // Save current system volume
+        let originalVolume = getSystemVolume()
+
+        // Set volume to alert level
+        setSystemVolume(alertVolumeLevel)
+
+        // Play system alert sound
+        NSSound.beep()
+
+        // Also play a longer custom sound if available
+        if let soundURL = Bundle.main.url(forResource: "alert", withExtension: "mp3") ??
+                          Bundle.main.url(forResource: "alert", withExtension: "aiff") {
+            audioPlayer = try? AVAudioPlayer(contentsOf: soundURL)
+            audioPlayer?.play()
+        } else {
+            // Use system sound multiple times for emphasis
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSSound.beep() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NSSound.beep() }
+        }
+
+        // Restore original volume after sound plays (3 seconds)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            self.setSystemVolume(originalVolume)
+        }
+    }
+
+    private func getSystemVolume() -> Float {
+        var outputDeviceID = AudioDeviceID(0)
+        var outputDeviceIDSize = UInt32(MemoryLayout.size(ofValue: outputDeviceID))
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &outputDeviceIDSize,
+            &outputDeviceID
+        )
+
+        var volume: Float = 0.0
+        var volumeSize = UInt32(MemoryLayout.size(ofValue: volume))
+
+        address.mSelector = kAudioHardwareServiceDeviceProperty_VirtualMainVolume
+        address.mScope = kAudioDevicePropertyScopeOutput
+
+        AudioObjectGetPropertyData(
+            outputDeviceID,
+            &address,
+            0,
+            nil,
+            &volumeSize,
+            &volume
+        )
+
+        return volume
+    }
+
+    private func setSystemVolume(_ volume: Float) {
+        var outputDeviceID = AudioDeviceID(0)
+        var outputDeviceIDSize = UInt32(MemoryLayout.size(ofValue: outputDeviceID))
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &outputDeviceIDSize,
+            &outputDeviceID
+        )
+
+        var newVolume = min(max(volume, 0.0), 1.0) // Clamp between 0 and 1
+        let volumeSize = UInt32(MemoryLayout.size(ofValue: newVolume))
+
+        address.mSelector = kAudioHardwareServiceDeviceProperty_VirtualMainVolume
+        address.mScope = kAudioDevicePropertyScopeOutput
+
+        AudioObjectSetPropertyData(
+            outputDeviceID,
+            &address,
+            0,
+            nil,
+            volumeSize,
+            &newVolume
+        )
     }
 
     @objc private func editTodayLimit() {

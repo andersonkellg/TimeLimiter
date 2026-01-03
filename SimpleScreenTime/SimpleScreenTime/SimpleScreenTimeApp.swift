@@ -25,10 +25,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var timer: Timer?
 
     private var state = UsageState.load()
+    private var alertsConfig = AlertsConfig.load()
     private var lastTick = Date()
     private var isCounting = true
-    private var popupsShownToday = 0
-    private var lastPopupTime: Date?
+    private var alertsShownToday: Set<Int> = []  // Track which alerts have been shown
     private var audioPlayer: AVAudioPlayer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupMenu() {
         let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Edit Alerts (PIN)", action: #selector(editAlerts), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Edit Today's Limit (PIN)", action: #selector(editTodayLimit), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Reset Today's Time (PIN)", action: #selector(resetWithPin), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
@@ -153,8 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.secondsUsedToday = 0
             state.didHitLimitToday = false
             state.todayLimitOverride = nil  // Reset to default limit for new day
-            popupsShownToday = 0  // Reset popup counter for new day
-            lastPopupTime = nil
+            alertsShownToday.removeAll()  // Reset shown alerts for new day
             log("NewDayReset")
             UsageState.save(state)
         }
@@ -222,68 +222,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showAnnoyingPopupIfNeeded() {
-        let now = Date()
+        // Calculate minutes over the limit
+        let overSeconds = abs(min(0, remainingSeconds()))
+        let minutesOver = Int(overSeconds / 60)
 
-        // Only show up to maxAnnoyancePopups times per day
-        if popupsShownToday >= maxAnnoyancePopups {
-            return
-        }
+        // Check which alerts should fire based on minutes over
+        for alertConfig in alertsConfig.alerts where alertConfig.enabled {
+            // Skip if already shown
+            if alertsShownToday.contains(alertConfig.id) {
+                continue
+            }
 
-        // Show popup every 60 seconds
-        if let lastPopup = lastPopupTime {
-            if now.timeIntervalSince(lastPopup) < 60 {
-                return
+            // Check if enough time has passed for this alert
+            if minutesOver >= alertConfig.minutesAfterExpiry {
+                showAlert(alertConfig)
+                alertsShownToday.insert(alertConfig.id)
+                log("Alert[\(alertConfig.id)]Shown")
             }
         }
+    }
 
-        lastPopupTime = now
-        popupsShownToday += 1
-
+    private func showAlert(_ config: AlertConfig) {
         // Play alert sound with volume override
         if playAlertSound {
-            playAlertSoundWithVolumeOverride()
+            playAlertSoundWithVolumeOverride(config: config)
         }
-
-        let remaining = maxAnnoyancePopups - popupsShownToday
 
         let alert = NSAlert()
         alert.alertStyle = .critical
-        alert.messageText = "⏰ SCREEN TIME IS UP! ⏰"
-        alert.informativeText = """
-        You've used all your screen time for today.
-
-        Please take a break from the computer.
-
-        Popups remaining today: \(remaining)
-        """
+        alert.messageText = "Screen Time Alert"
+        alert.informativeText = config.message
         alert.addButton(withTitle: "OK, I understand")
 
         // Make it modal and bring to front
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
-
-        log("AnnoyancePopup[\(popupsShownToday)/\(maxAnnoyancePopups)]")
     }
 
-    private func playAlertSoundWithVolumeOverride() {
+    private func playAlertSoundWithVolumeOverride(config: AlertConfig) {
         // Save current system volume
         let originalVolume = getSystemVolume()
 
         // Set volume to alert level
         setSystemVolume(alertVolumeLevel)
 
-        // Play system alert sound
-        NSSound.beep()
-
-        // Also play a longer custom sound if available
-        if let soundURL = Bundle.main.url(forResource: "alert", withExtension: "mp3") ??
-                          Bundle.main.url(forResource: "alert", withExtension: "aiff") {
-            audioPlayer = try? AVAudioPlayer(contentsOf: soundURL)
-            audioPlayer?.play()
-        } else {
-            // Use system sound multiple times for emphasis
+        if config.useDefaultSound {
+            // Play system alert sound multiple times
+            NSSound.beep()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSSound.beep() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NSSound.beep() }
+        } else if let fileName = config.customSoundFileName {
+            // Play custom sound file
+            let soundURL = AlertsConfig.audioFilesURL.appendingPathComponent(fileName)
+            if FileManager.default.fileExists(atPath: soundURL.path) {
+                audioPlayer = try? AVAudioPlayer(contentsOf: soundURL)
+                audioPlayer?.play()
+            } else {
+                // Fallback to default if custom file missing
+                NSSound.beep()
+            }
         }
 
         // Restore original volume after sound plays (3 seconds)
@@ -362,6 +359,166 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             volumeSize,
             &newVolume
         )
+    }
+
+    @objc private func editAlerts() {
+        // PIN verification first
+        if !verifyPIN() { return }
+
+        // Create window to show all alerts
+        let alert = NSAlert()
+        alert.messageText = "Configure Alerts"
+        alert.informativeText = "Select an alert to edit, or enable/disable alerts below:"
+        alert.alertStyle = .informational
+
+        // Create custom view with table of alerts
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 200))
+
+        var yOffset: CGFloat = 160
+        for (index, alertConfig) in alertsConfig.alerts.enumerated() {
+            // Checkbox for enable/disable
+            let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+            checkbox.state = alertConfig.enabled ? .on : .off
+            checkbox.frame = NSRect(x: 10, y: yOffset, width: 20, height: 20)
+            checkbox.tag = alertConfig.id
+            view.addSubview(checkbox)
+
+            // Alert summary label
+            let label = NSTextField(labelWithString: "Alert \(alertConfig.id): +\(alertConfig.minutesAfterExpiry)min - \(alertConfig.message.prefix(40))...")
+            label.frame = NSRect(x: 35, y: yOffset, width: 350, height: 20)
+            view.addSubview(label)
+
+            // Edit button
+            let editBtn = NSButton(title: "Edit", target: self, action: #selector(editSingleAlert(_:)))
+            editBtn.frame = NSRect(x: 400, y: yOffset - 2, width: 80, height: 24)
+            editBtn.tag = alertConfig.id
+            view.addSubview(editBtn)
+
+            yOffset -= 30
+        }
+
+        alert.accessoryView = view
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            // Update enabled states from checkboxes
+            for subview in view.subviews {
+                if let checkbox = subview as? NSButton, checkbox.title == "" {
+                    if let index = alertsConfig.alerts.firstIndex(where: { $0.id == checkbox.tag }) {
+                        alertsConfig.alerts[index].enabled = (checkbox.state == .on)
+                    }
+                }
+            }
+            AlertsConfig.save(alertsConfig)
+            log("AlertsConfigUpdated")
+        }
+    }
+
+    @objc private func editSingleAlert(_ sender: NSButton) {
+        let alertId = sender.tag
+        guard let index = alertsConfig.alerts.firstIndex(where: { $0.id == alertId }) else { return }
+        var config = alertsConfig.alerts[index]
+
+        let alert = NSAlert()
+        alert.messageText = "Edit Alert \(alertId)"
+        alert.informativeText = "Configure this alert:"
+        alert.alertStyle = .informational
+
+        // Create form
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 220))
+
+        // Message text
+        let msgLabel = NSTextField(labelWithString: "Alert Message:")
+        msgLabel.frame = NSRect(x: 10, y: 190, width: 380, height: 20)
+        view.addSubview(msgLabel)
+
+        let msgField = NSTextView(frame: NSRect(x: 10, y: 120, width: 380, height: 65))
+        msgField.string = config.message
+        msgField.font = NSFont.systemFont(ofSize: 13)
+        let scrollView = NSScrollView(frame: msgField.frame)
+        scrollView.documentView = msgField
+        scrollView.hasVerticalScroller = true
+        view.addSubview(scrollView)
+
+        // Minutes after expiry
+        let minLabel = NSTextField(labelWithString: "Minutes after time expires:")
+        minLabel.frame = NSRect(x: 10, y: 90, width: 200, height: 20)
+        view.addSubview(minLabel)
+
+        let minField = NSTextField(frame: NSRect(x: 220, y: 90, width: 60, height: 24))
+        minField.stringValue = "\(config.minutesAfterExpiry)"
+        view.addSubview(minField)
+
+        // Audio options
+        let audioLabel = NSTextField(labelWithString: "Alert Sound:")
+        audioLabel.frame = NSRect(x: 10, y: 55, width: 100, height: 20)
+        view.addSubview(audioLabel)
+
+        let defaultSoundRadio = NSButton(radioButtonWithTitle: "Default Beep", target: nil, action: nil)
+        defaultSoundRadio.frame = NSRect(x: 120, y: 55, width: 120, height: 20)
+        defaultSoundRadio.state = config.useDefaultSound ? .on : .off
+        view.addSubview(defaultSoundRadio)
+
+        let customSoundRadio = NSButton(radioButtonWithTitle: "Custom Sound", target: nil, action: nil)
+        customSoundRadio.frame = NSRect(x: 250, y: 55, width: 140, height: 20)
+        customSoundRadio.state = config.useDefaultSound ? .off : .on
+        view.addSubview(customSoundRadio)
+
+        // Custom sound file selection
+        let soundFileLabel = NSTextField(labelWithString: config.customSoundFileName ?? "No file selected")
+        soundFileLabel.frame = NSRect(x: 120, y: 30, width: 200, height: 20)
+        view.addSubview(soundFileLabel)
+
+        let chooseSoundBtn = NSButton(title: "Choose File...", target: nil, action: nil)
+        chooseSoundBtn.frame = NSRect(x: 120, y: 5, width: 100, height: 24)
+        view.addSubview(chooseSoundBtn)
+
+        alert.accessoryView = view
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            // Save changes
+            config.message = msgField.string
+            if let minutes = Int(minField.stringValue), minutes >= 0 {
+                config.minutesAfterExpiry = minutes
+            }
+            config.useDefaultSound = (defaultSoundRadio.state == .on)
+
+            alertsConfig.alerts[index] = config
+            AlertsConfig.save(alertsConfig)
+            log("Alert[\(alertId)]Updated")
+        }
+    }
+
+    private func verifyPIN() -> Bool {
+        let pinAlert = NSAlert()
+        pinAlert.messageText = "Enter PIN"
+        pinAlert.informativeText = "Authentication required"
+        pinAlert.alertStyle = .informational
+
+        let pinField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        pinField.placeholderString = "PIN"
+        pinAlert.accessoryView = pinField
+
+        pinAlert.addButton(withTitle: "OK")
+        pinAlert.addButton(withTitle: "Cancel")
+
+        let response = pinAlert.runModal()
+        guard response == .alertFirstButtonReturn else { return false }
+
+        if pinField.stringValue == hardCodedPin {
+            return true
+        } else {
+            let fail = NSAlert()
+            fail.messageText = "Wrong PIN"
+            fail.runModal()
+            log("PINVerificationFailed")
+            return false
+        }
     }
 
     @objc private func editTodayLimit() {
@@ -477,6 +634,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Logger.append(event: event,
                       used: Int(state.secondsUsedToday),
                       remaining: Int(remainingSeconds()))
+    }
+}
+
+// Alert Configuration
+struct AlertConfig: Codable, Identifiable {
+    var id: Int
+    var enabled: Bool
+    var message: String
+    var minutesAfterExpiry: Int  // How many minutes after 0 to show this alert
+    var useDefaultSound: Bool
+    var customSoundFileName: String?  // Stored in app support
+
+    static func defaultAlerts() -> [AlertConfig] {
+        return [
+            AlertConfig(id: 1, enabled: true, message: "⏰ SCREEN TIME IS UP! ⏰\n\nYou've used all your screen time for today.\n\nPlease take a break from the computer.", minutesAfterExpiry: 0, useDefaultSound: true, customSoundFileName: nil),
+            AlertConfig(id: 2, enabled: true, message: "Second reminder: Please step away from the computer.", minutesAfterExpiry: 5, useDefaultSound: true, customSoundFileName: nil),
+            AlertConfig(id: 3, enabled: true, message: "Third reminder: Time to take a break now.", minutesAfterExpiry: 10, useDefaultSound: true, customSoundFileName: nil),
+            AlertConfig(id: 4, enabled: false, message: "Fourth reminder: Please close the computer.", minutesAfterExpiry: 15, useDefaultSound: true, customSoundFileName: nil),
+            AlertConfig(id: 5, enabled: false, message: "Final reminder: Computer time is over for today.", minutesAfterExpiry: 20, useDefaultSound: true, customSoundFileName: nil)
+        ]
+    }
+}
+
+struct AlertsConfig: Codable {
+    var alerts: [AlertConfig]
+
+    static func load() -> AlertsConfig {
+        if let data = try? Data(contentsOf: configURL),
+           let config = try? JSONDecoder().decode(AlertsConfig.self, from: data) {
+            return config
+        }
+        return AlertsConfig(alerts: AlertConfig.defaultAlerts())
+    }
+
+    static func save(_ config: AlertsConfig) {
+        do {
+            try FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(config)
+            try data.write(to: configURL, options: [.atomic])
+        } catch {
+            // best-effort
+        }
+    }
+
+    private static var appSupportURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("SimpleScreenTime", isDirectory: true)
+    }
+
+    private static var configURL: URL {
+        appSupportURL.appendingPathComponent("alerts_config.json")
+    }
+
+    static var audioFilesURL: URL {
+        appSupportURL.appendingPathComponent("AlertSounds", isDirectory: true)
     }
 }
 

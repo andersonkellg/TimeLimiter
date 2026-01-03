@@ -609,8 +609,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if pinField.stringValue == hardCodedPin {
             state.secondsUsedToday = 0
             state.didHitLimitToday = false
-            popupsShownToday = 0  // Reset popup counter
-            lastPopupTime = nil
+            alertsShownToday.removeAll()  // Reset alert tracking
             UsageState.save(state)
             log("ManualResetOK")
             updateUI()

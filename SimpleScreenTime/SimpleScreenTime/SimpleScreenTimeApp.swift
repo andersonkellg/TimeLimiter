@@ -222,19 +222,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showAnnoyingPopupIfNeeded() {
-        // Calculate minutes over the limit
-        let overSeconds = abs(min(0, remainingSeconds()))
+        let rem = remainingSeconds()
+        let minutesRemaining = Int(ceil(rem / 60.0))
+        let overSeconds = abs(min(0, rem))
         let minutesOver = Int(overSeconds / 60)
 
-        // Check which alerts should fire based on minutes over
+        // Check all enabled alerts
         for alertConfig in alertsConfig.alerts where alertConfig.enabled {
             // Skip if already shown
             if alertsShownToday.contains(alertConfig.id) {
                 continue
             }
 
-            // Check if enough time has passed for this alert
-            if minutesOver >= alertConfig.minutesAfterExpiry {
+            var shouldShow = false
+
+            if alertConfig.isPreAlert {
+                // Pre-alert: trigger when remaining time matches minutesOffset
+                shouldShow = (minutesRemaining > 0) && (minutesRemaining <= alertConfig.minutesOffset)
+            } else {
+                // Post-alert: trigger when time over matches minutesOffset
+                shouldShow = (rem <= 0) && (minutesOver >= alertConfig.minutesOffset)
+            }
+
+            if shouldShow {
                 showAlert(alertConfig)
                 alertsShownToday.insert(alertConfig.id)
                 log("Alert[\(alertConfig.id)]Shown")
@@ -248,6 +258,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             playAlertSoundWithVolumeOverride(config: config)
         }
 
+        // Pre-alerts: sound only, no popup
+        if config.isPreAlert {
+            return
+        }
+
+        // Post-alerts: show popup dialog
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Screen Time Alert"
@@ -384,14 +400,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Create window to show all alerts
         let alert = NSAlert()
         alert.messageText = "Configure Alerts"
-        alert.informativeText = "Select an alert to edit, or enable/disable alerts below:"
+        alert.informativeText = "Pre-alerts play sound only. Post-alerts show popup dialogs."
         alert.alertStyle = .informational
 
-        // Create custom view with table of alerts
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 200))
+        // Create custom view with table of alerts (taller for 8 alerts + separator)
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 290))
 
-        var yOffset: CGFloat = 160
+        var yOffset: CGFloat = 260
+        var addedSeparator = false
+
         for (index, alertConfig) in alertsConfig.alerts.enumerated() {
+            // Add separator between pre and post alerts
+            if !addedSeparator && !alertConfig.isPreAlert {
+                let separator = NSBox(frame: NSRect(x: 10, y: yOffset + 5, width: 480, height: 1))
+                separator.boxType = .separator
+                view.addSubview(separator)
+                yOffset -= 10
+                addedSeparator = true
+            }
+
             // Checkbox for enable/disable
             let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
             checkbox.state = alertConfig.enabled ? .on : .off
@@ -399,8 +426,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             checkbox.tag = alertConfig.id
             view.addSubview(checkbox)
 
-            // Alert summary label
-            let label = NSTextField(labelWithString: "Alert \(alertConfig.id): +\(alertConfig.minutesAfterExpiry)min - \(alertConfig.message.prefix(40))...")
+            // Alert summary label - no time display
+            let typeLabel = alertConfig.isPreAlert ? "Pre" : "Post"
+            let label = NSTextField(labelWithString: "\(typeLabel) Alert \(alertConfig.id): \(alertConfig.message.prefix(35))...")
             label.frame = NSRect(x: 35, y: yOffset, width: 350, height: 20)
             view.addSubview(label)
 
@@ -458,13 +486,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         scrollView.hasVerticalScroller = true
         view.addSubview(scrollView)
 
-        // Minutes after expiry
-        let minLabel = NSTextField(labelWithString: "Minutes after time expires:")
+        // Minutes before/after expiry
+        let minLabelText = config.isPreAlert ? "Minutes before time expires:" : "Minutes after time expires:"
+        let minLabel = NSTextField(labelWithString: minLabelText)
         minLabel.frame = NSRect(x: 10, y: 190, width: 200, height: 20)
         view.addSubview(minLabel)
 
         let minField = NSTextField(frame: NSRect(x: 220, y: 190, width: 60, height: 24))
-        minField.stringValue = "\(config.minutesAfterExpiry)"
+        minField.stringValue = "\(config.minutesOffset)"
         view.addSubview(minField)
 
         // Audio options with radio buttons using NSPopUpButton for simplicity
@@ -561,7 +590,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Save changes
                 config.message = msgField.string
                 if let minutes = Int(minField.stringValue), minutes >= 0 {
-                    config.minutesAfterExpiry = minutes
+                    config.minutesOffset = minutes
                 }
 
                 // Determine selected audio type from popup
@@ -813,13 +842,19 @@ struct AlertConfig: Codable, Identifiable {
     var id: Int
     var enabled: Bool
     var message: String
-    var minutesAfterExpiry: Int  // How many minutes after 0 to show this alert
+    var minutesOffset: Int  // Minutes before (negative) or after (positive) time expires
+    var isPreAlert: Bool  // true = before time expires, false = after
     var audioType: AlertAudioType
     var customSoundFileName: String?  // For customFile type
     var speechMessage: String?  // For speakMessage type
     var voiceName: String?  // For speakMessage type (e.g. "Samantha")
 
-    // Legacy support for useDefaultSound
+    // Legacy support
+    var minutesAfterExpiry: Int {
+        get { isPreAlert ? 0 : minutesOffset }
+        set { minutesOffset = newValue; isPreAlert = false }
+    }
+
     var useDefaultSound: Bool {
         get { audioType == .defaultBeep }
         set { audioType = newValue ? .defaultBeep : .customFile }
@@ -827,11 +862,17 @@ struct AlertConfig: Codable, Identifiable {
 
     static func defaultAlerts() -> [AlertConfig] {
         return [
-            AlertConfig(id: 1, enabled: true, message: "⏰ SCREEN TIME IS UP! ⏰\n\nYou've used all your screen time for today.\n\nPlease take a break from the computer.", minutesAfterExpiry: 0, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
-            AlertConfig(id: 2, enabled: true, message: "Second reminder: Please step away from the computer.", minutesAfterExpiry: 5, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
-            AlertConfig(id: 3, enabled: true, message: "Third reminder: Time to take a break now.", minutesAfterExpiry: 10, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
-            AlertConfig(id: 4, enabled: false, message: "Fourth reminder: Please close the computer.", minutesAfterExpiry: 15, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
-            AlertConfig(id: 5, enabled: false, message: "Final reminder: Computer time is over for today.", minutesAfterExpiry: 20, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil)
+            // Pre-time alerts (sound only, no popup)
+            AlertConfig(id: 1, enabled: true, message: "15 minutes remaining.", minutesOffset: 15, isPreAlert: true, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
+            AlertConfig(id: 2, enabled: true, message: "10 minutes remaining.", minutesOffset: 10, isPreAlert: true, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
+            AlertConfig(id: 3, enabled: true, message: "5 minutes remaining.", minutesOffset: 5, isPreAlert: true, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
+
+            // Post-time alerts (sound + popup)
+            AlertConfig(id: 4, enabled: true, message: "⏰ SCREEN TIME IS UP! ⏰\n\nYou've used all your screen time for today.\n\nPlease take a break from the computer.", minutesOffset: 0, isPreAlert: false, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
+            AlertConfig(id: 5, enabled: true, message: "Second reminder: Please step away from the computer.", minutesOffset: 5, isPreAlert: false, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
+            AlertConfig(id: 6, enabled: true, message: "Third reminder: Time to take a break now.", minutesOffset: 10, isPreAlert: false, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
+            AlertConfig(id: 7, enabled: false, message: "Fourth reminder: Please close the computer.", minutesOffset: 15, isPreAlert: false, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
+            AlertConfig(id: 8, enabled: false, message: "Final reminder: Computer time is over for today.", minutesOffset: 20, isPreAlert: false, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil)
         ]
     }
 }

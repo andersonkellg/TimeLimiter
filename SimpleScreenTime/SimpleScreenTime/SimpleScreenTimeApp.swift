@@ -14,7 +14,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hardCodedPin = "0000"                     // change this
     private let blinkWhenOverLimit = true
     private let showBackgroundColor = true                // colored background
-    private let maxAnnoyancePopups = 5                    // number of popups before stopping
     // ====================
 
     private var statusItem: NSStatusItem!
@@ -72,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         setupCountdownMenuItem(in: menu)
         menu.addItem(NSMenuItem(title: "Edit Today's Limit (PIN)", action: #selector(editTodayLimit), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Edit Alerts (PIN)", action: #selector(editAlerts), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Reset Today's Time (PIN)", action: #selector(resetWithPin), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Open Log Folder", action: #selector(openLogFolder), keyEquivalent: ""))
@@ -272,16 +272,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func speakPreAlertIfNeeded(remainingSeconds: TimeInterval) {
-        if remainingSeconds <= 5 * 60, !state.spokePreAlert5 {
+        let alertMinutes = validatedAlertMinutes()
+        let preAlert5Threshold = TimeInterval(alertMinutes.preAlert5 * 60)
+        let preAlert15Threshold = TimeInterval(alertMinutes.preAlert15 * 60)
+
+        if remainingSeconds <= preAlert5Threshold, !state.spokePreAlert5 {
             state.spokePreAlert5 = true
-            speak("Five minutes remaining.")
+            speak("\(alertMinutes.preAlert5) minutes remaining.")
             log("SpokenPreAlert5")
             UsageState.save(state)
             return
         }
-        if remainingSeconds <= 15 * 60, !state.spokePreAlert15 {
+        if remainingSeconds <= preAlert15Threshold, !state.spokePreAlert15 {
             state.spokePreAlert15 = true
-            speak("Fifteen minutes remaining.")
+            speak("\(alertMinutes.preAlert15) minutes remaining.")
             log("SpokenPreAlert15")
             UsageState.save(state)
         }
@@ -304,6 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showAnnoyingPopupIfNeeded() {
         let now = Date()
+        let maxAnnoyancePopups = max(0, state.maxAnnoyancePopups)
 
         // Only show up to maxAnnoyancePopups times per day
         if popupsShownToday >= maxAnnoyancePopups {
@@ -341,6 +346,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
 
         log("AnnoyancePopup[\(popupsShownToday)/\(maxAnnoyancePopups)]")
+    }
+
+    private func validatedAlertMinutes() -> (preAlert15: Int, preAlert5: Int) {
+        let preAlert5 = max(1, state.preAlert5Minutes)
+        let preAlert15 = max(preAlert5 + 1, state.preAlert15Minutes)
+        return (preAlert15, preAlert5)
     }
 
     @objc private func editTodayLimit() {
@@ -410,6 +421,114 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             error.informativeText = "Please enter a number between 1 and 1440 minutes (24 hours)."
             error.runModal()
         }
+    }
+
+    @objc private func editAlerts() {
+        let pinAlert = NSAlert()
+        pinAlert.messageText = "Edit Alert Settings"
+        pinAlert.informativeText = "Enter PIN to edit alert settings."
+        pinAlert.alertStyle = .informational
+
+        let pinField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        pinField.placeholderString = "PIN"
+        pinAlert.accessoryView = pinField
+
+        pinAlert.addButton(withTitle: "Continue")
+        pinAlert.addButton(withTitle: "Cancel")
+
+        let pinResp = pinAlert.runModal()
+        guard pinResp == .alertFirstButtonReturn else { return }
+
+        if pinField.stringValue != hardCodedPin {
+            log("EditAlertsBADPIN")
+            let fail = NSAlert()
+            fail.messageText = "Wrong PIN"
+            fail.runModal()
+            return
+        }
+
+        let settingsAlert = NSAlert()
+        settingsAlert.messageText = "Edit Alert Settings"
+        settingsAlert.informativeText = "Set pre-alert minutes and popup count."
+        settingsAlert.alertStyle = .informational
+
+        let preAlert15Field = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 22))
+        preAlert15Field.placeholderString = "15"
+        preAlert15Field.stringValue = "\(state.preAlert15Minutes)"
+
+        let preAlert5Field = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 22))
+        preAlert5Field.placeholderString = "5"
+        preAlert5Field.stringValue = "\(state.preAlert5Minutes)"
+
+        let popupField = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 22))
+        popupField.placeholderString = "5"
+        popupField.stringValue = "\(state.maxAnnoyancePopups)"
+
+        let preAlert15Label = NSTextField(labelWithString: "First warning (minutes):")
+        let preAlert5Label = NSTextField(labelWithString: "Final warning (minutes):")
+        let popupLabel = NSTextField(labelWithString: "Max popups per day:")
+
+        let preAlert15Row = NSStackView(views: [preAlert15Label, preAlert15Field])
+        preAlert15Row.orientation = .horizontal
+        preAlert15Row.spacing = 8
+
+        let preAlert5Row = NSStackView(views: [preAlert5Label, preAlert5Field])
+        preAlert5Row.orientation = .horizontal
+        preAlert5Row.spacing = 8
+
+        let popupRow = NSStackView(views: [popupLabel, popupField])
+        popupRow.orientation = .horizontal
+        popupRow.spacing = 8
+
+        let stack = NSStackView(views: [preAlert15Row, preAlert5Row, popupRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
+
+        settingsAlert.accessoryView = stack
+        settingsAlert.addButton(withTitle: "Save")
+        settingsAlert.addButton(withTitle: "Cancel")
+
+        let settingsResp = settingsAlert.runModal()
+        guard settingsResp == .alertFirstButtonReturn else { return }
+
+        guard let preAlert15 = Int(preAlert15Field.stringValue),
+              let preAlert5 = Int(preAlert5Field.stringValue),
+              let maxPopups = Int(popupField.stringValue) else {
+            let error = NSAlert()
+            error.messageText = "Invalid Input"
+            error.informativeText = "Please enter whole numbers for all alert settings."
+            error.runModal()
+            return
+        }
+
+        guard preAlert5 >= 1, preAlert15 > preAlert5, preAlert15 <= 1440 else {
+            let error = NSAlert()
+            error.messageText = "Invalid Alert Minutes"
+            error.informativeText = "Final warning must be at least 1 minute, and the first warning must be greater than the final warning (max 1440 minutes)."
+            error.runModal()
+            return
+        }
+
+        guard maxPopups >= 0, maxPopups <= 50 else {
+            let error = NSAlert()
+            error.messageText = "Invalid Popup Count"
+            error.informativeText = "Max popups per day must be between 0 and 50."
+            error.runModal()
+            return
+        }
+
+        state.preAlert15Minutes = preAlert15
+        state.preAlert5Minutes = preAlert5
+        state.maxAnnoyancePopups = maxPopups
+        popupsShownToday = min(popupsShownToday, maxPopups)
+        state.popupsShownToday = popupsShownToday
+        state.spokePreAlert15 = false
+        state.spokePreAlert5 = false
+        UsageState.save(state)
+        log("EditAlertsOK[pre15=\(preAlert15),pre5=\(preAlert5),maxPopups=\(maxPopups)]")
+        updateUI()
     }
 
     @objc private func resetWithPin() {
@@ -497,6 +616,9 @@ struct UsageState: Codable {
     var spokePreAlert15: Bool
     var spokePreAlert5: Bool
     var spokePostAlert: Bool
+    var preAlert15Minutes: Int
+    var preAlert5Minutes: Int
+    var maxAnnoyancePopups: Int
 
     private enum CodingKeys: String, CodingKey {
         case dayStart
@@ -508,6 +630,9 @@ struct UsageState: Codable {
         case spokePreAlert15
         case spokePreAlert5
         case spokePostAlert
+        case preAlert15Minutes
+        case preAlert5Minutes
+        case maxAnnoyancePopups
     }
 
     init(dayStart: Date,
@@ -518,7 +643,10 @@ struct UsageState: Codable {
          lastPopupTime: Date?,
          spokePreAlert15: Bool,
          spokePreAlert5: Bool,
-         spokePostAlert: Bool) {
+         spokePostAlert: Bool,
+         preAlert15Minutes: Int,
+         preAlert5Minutes: Int,
+         maxAnnoyancePopups: Int) {
         self.dayStart = dayStart
         self.secondsUsedToday = secondsUsedToday
         self.didHitLimitToday = didHitLimitToday
@@ -528,6 +656,9 @@ struct UsageState: Codable {
         self.spokePreAlert15 = spokePreAlert15
         self.spokePreAlert5 = spokePreAlert5
         self.spokePostAlert = spokePostAlert
+        self.preAlert15Minutes = preAlert15Minutes
+        self.preAlert5Minutes = preAlert5Minutes
+        self.maxAnnoyancePopups = maxAnnoyancePopups
     }
 
     init(from decoder: Decoder) throws {
@@ -541,6 +672,9 @@ struct UsageState: Codable {
         spokePreAlert15 = try container.decodeIfPresent(Bool.self, forKey: .spokePreAlert15) ?? false
         spokePreAlert5 = try container.decodeIfPresent(Bool.self, forKey: .spokePreAlert5) ?? false
         spokePostAlert = try container.decodeIfPresent(Bool.self, forKey: .spokePostAlert) ?? false
+        preAlert15Minutes = try container.decodeIfPresent(Int.self, forKey: .preAlert15Minutes) ?? UsageState.defaultPreAlert15Minutes
+        preAlert5Minutes = try container.decodeIfPresent(Int.self, forKey: .preAlert5Minutes) ?? UsageState.defaultPreAlert5Minutes
+        maxAnnoyancePopups = try container.decodeIfPresent(Int.self, forKey: .maxAnnoyancePopups) ?? UsageState.defaultMaxAnnoyancePopups
     }
 
     func encode(to encoder: Encoder) throws {
@@ -554,6 +688,9 @@ struct UsageState: Codable {
         try container.encode(spokePreAlert15, forKey: .spokePreAlert15)
         try container.encode(spokePreAlert5, forKey: .spokePreAlert5)
         try container.encode(spokePostAlert, forKey: .spokePostAlert)
+        try container.encode(preAlert15Minutes, forKey: .preAlert15Minutes)
+        try container.encode(preAlert5Minutes, forKey: .preAlert5Minutes)
+        try container.encode(maxAnnoyancePopups, forKey: .maxAnnoyancePopups)
     }
 
     static func load() -> UsageState {
@@ -569,7 +706,10 @@ struct UsageState: Codable {
                           lastPopupTime: nil,
                           spokePreAlert15: false,
                           spokePreAlert5: false,
-                          spokePostAlert: false)
+                          spokePostAlert: false,
+                          preAlert15Minutes: UsageState.defaultPreAlert15Minutes,
+                          preAlert5Minutes: UsageState.defaultPreAlert5Minutes,
+                          maxAnnoyancePopups: UsageState.defaultMaxAnnoyancePopups)
     }
 
     static func save(_ state: UsageState) {
@@ -589,6 +729,10 @@ struct UsageState: Codable {
     private static var stateURL: URL {
         appSupportURL.appendingPathComponent("state.json")
     }
+
+    static let defaultPreAlert15Minutes = 15
+    static let defaultPreAlert5Minutes = 5
+    static let defaultMaxAnnoyancePopups = 5
 }
 
 enum Logger {

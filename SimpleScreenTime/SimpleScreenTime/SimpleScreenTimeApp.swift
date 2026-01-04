@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ObjectiveC
 
 @main
 struct SimpleScreenTimeApp: App {
@@ -7,27 +8,40 @@ struct SimpleScreenTimeApp: App {
     var body: some Scene { Settings { EmptyView() } } // no windows
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private final class AlertPreviewContext: NSObject {
-        let minutesField: NSTextField?
-        let fallbackMinutes: Int
-        let messageField: NSTextField
-        let voicePopup: NSPopUpButton
-        let defaultMessage: (Int) -> String
+private var alertPreviewContextKey: UInt8 = 0
 
-        init(minutesField: NSTextField?,
-             fallbackMinutes: Int,
-             messageField: NSTextField,
-             voicePopup: NSPopUpButton,
-             defaultMessage: @escaping (Int) -> String) {
-            self.minutesField = minutesField
-            self.fallbackMinutes = fallbackMinutes
-            self.messageField = messageField
-            self.voicePopup = voicePopup
-            self.defaultMessage = defaultMessage
+private extension NSButton {
+    var alertPreviewContext: AlertPreviewContext? {
+        get {
+            objc_getAssociatedObject(self, &alertPreviewContextKey) as? AlertPreviewContext
+        }
+        set {
+            objc_setAssociatedObject(self, &alertPreviewContextKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         }
     }
+}
 
+private final class AlertPreviewContext: NSObject {
+    let minutesField: NSTextField?
+    let fallbackMinutes: Int
+    let messageField: NSTextField
+    let voicePopup: NSPopUpButton
+    let defaultMessage: (Int) -> String
+
+    init(minutesField: NSTextField?,
+         fallbackMinutes: Int,
+         messageField: NSTextField,
+         voicePopup: NSPopUpButton,
+         defaultMessage: @escaping (Int) -> String) {
+        self.minutesField = minutesField
+        self.fallbackMinutes = fallbackMinutes
+        self.messageField = messageField
+        self.voicePopup = voicePopup
+        self.defaultMessage = defaultMessage
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
     // ====== CONFIG ======
     private let dailyLimitSeconds: TimeInterval = 60 * 60  // 1 hour
     private let hardCodedPin = "0000"                     // change this
@@ -346,17 +360,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func previewAlertSpeech(_ sender: NSButton) {
-        guard let context = sender.representedObject as? AlertPreviewContext else { return }
+        guard let context = sender.alertPreviewContext else { return }
 
         var minutes = context.fallbackMinutes
         if let minutesField = context.minutesField {
-            let trimmed = minutesField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = minutesField.stringValue.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             if let value = Int(trimmed), value > 0 {
                 minutes = value
             }
         }
 
-        let trimmedMessage = context.messageField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedMessage = context.messageField.stringValue.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         let template = trimmedMessage.isEmpty ? context.defaultMessage(minutes) : trimmedMessage
         let message = resolvedAlertMessage(template: template, minutes: minutes)
         let voiceID = context.voicePopup.selectedItem?.representedObject as? String
@@ -605,7 +619,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         limitReachedMessageField.stringValue = state.limitReachedAlertMessage
         let limitReachedVoicePopup = makeVoicePopup(selectedVoiceID: state.limitReachedAlertVoiceID)
         let limitReachedPreviewButton = NSButton(title: "Preview", target: self, action: #selector(previewAlertSpeech(_:)))
-        limitReachedPreviewButton.representedObject = AlertPreviewContext(
+        limitReachedPreviewButton.alertPreviewContext = AlertPreviewContext(
             minutesField: nil,
             fallbackMinutes: 0,
             messageField: limitReachedMessageField,
@@ -634,7 +648,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let voicePopup = makeVoicePopup(selectedVoiceID: state.preAlertVoiceIDs[safe: index] ?? nil)
 
             let previewButton = NSButton(title: "Preview", target: self, action: #selector(previewAlertSpeech(_:)))
-            previewButton.representedObject = AlertPreviewContext(
+            previewButton.alertPreviewContext = AlertPreviewContext(
                 minutesField: minutesField,
                 fallbackMinutes: value,
                 messageField: messageField,
@@ -670,7 +684,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let voicePopup = makeVoicePopup(selectedVoiceID: state.postAlertVoiceIDs[safe: index] ?? nil)
 
             let previewButton = NSButton(title: "Preview", target: self, action: #selector(previewAlertSpeech(_:)))
-            previewButton.representedObject = AlertPreviewContext(
+            previewButton.alertPreviewContext = AlertPreviewContext(
                 minutesField: minutesField,
                 fallbackMinutes: value,
                 messageField: messageField,
@@ -764,7 +778,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard settingsResp == .alertFirstButtonReturn else { return }
 
         func parseMinutes(field: NSTextField, fallback: Int, enabled: Bool) -> Int? {
-            let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = field.stringValue.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             if trimmed.isEmpty {
                 return enabled ? nil : fallback
             }
@@ -793,7 +807,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             preAlertInputs.append(minutes)
 
-            let trimmedMessage = preAlertMessageFields[index].stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedMessage = preAlertMessageFields[index].stringValue.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             let message = trimmedMessage.isEmpty ? defaultPreAlertMessage(minutes: minutes) : trimmedMessage
             preAlertMessages.append(message)
 
@@ -817,7 +831,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             postAlertInputs.append(minutes)
 
-            let trimmedMessage = postAlertMessageFields[index].stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedMessage = postAlertMessageFields[index].stringValue.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             let message = trimmedMessage.isEmpty ? defaultPostAlertMessage(minutes: minutes) : trimmedMessage
             postAlertMessages.append(message)
 
@@ -855,7 +869,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let limitReachedEnabled = limitReachedEnabledButton.state == .on
-        let limitReachedMessageTrimmed = limitReachedMessageField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let limitReachedMessageTrimmed = limitReachedMessageField.stringValue.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         let limitReachedMessage = limitReachedMessageTrimmed.isEmpty ? UsageState.defaultLimitReachedAlertMessage : limitReachedMessageTrimmed
         let limitReachedVoiceID = limitReachedVoicePopup.selectedItem?.representedObject as? String
 

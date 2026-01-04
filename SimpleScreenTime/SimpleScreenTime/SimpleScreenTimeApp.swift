@@ -153,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func tick() {
         normalizeForToday()
+        syncAlertState()
 
         let now = Date()
         defer { lastTick = now }
@@ -166,6 +167,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if remainingSeconds() <= 0 && !state.didHitLimitToday {
             state.didHitLimitToday = true
+            state.limitReachedAt = now
+            state.postAlertsShown = Array(repeating: false, count: state.postAlertMinutes.count)
             log("LimitReached")
             speakPostAlertIfNeeded()
         }
@@ -188,6 +191,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.spokePreAlert15 = false
             state.spokePreAlert5 = false
             state.spokePostAlert = false
+            state.preAlertsSpoken = Array(repeating: false, count: state.preAlertMinutes.count)
+            state.postAlertsShown = Array(repeating: false, count: state.postAlertMinutes.count)
+            state.limitReachedAt = nil
             log("NewDayReset")
             UsageState.save(state)
         }
@@ -310,24 +316,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let now = Date()
         let maxAnnoyancePopups = max(0, state.maxAnnoyancePopups)
 
-        // Only show up to maxAnnoyancePopups times per day
-        if popupsShownToday >= maxAnnoyancePopups {
+        let postAlertMinutes = normalizedPostAlertMinutes()
+        guard let nextIndex = postAlertMinutes.indices.first(where: { index in
+            let threshold = TimeInterval(postAlertMinutes[index] * 60)
+            return !state.postAlertsShown[index] && now.timeIntervalSince(limitReachedAt) >= threshold
+        }) else {
             return
         }
 
-        // Show popup every 60 seconds
-        if let lastPopup = lastPopupTime {
-            if now.timeIntervalSince(lastPopup) < 60 {
-                return
-            }
-        }
-
-        lastPopupTime = now
-        popupsShownToday += 1
-        state.lastPopupTime = lastPopupTime
-        state.popupsShownToday = popupsShownToday
-
-        let remaining = maxAnnoyancePopups - popupsShownToday
+        state.postAlertsShown[nextIndex] = true
+        UsageState.save(state)
 
         let alert = NSAlert()
         alert.alertStyle = .critical
@@ -336,8 +334,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         You've used all your screen time for today.
 
         Please take a break from the computer.
-
-        Popups remaining today: \(remaining)
         """
         alert.addButton(withTitle: "OK, I understand")
 
@@ -345,7 +341,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
 
-        log("AnnoyancePopup[\(popupsShownToday)/\(maxAnnoyancePopups)]")
+        log("AnnoyancePopup[\(nextIndex + 1)/\(postAlertMinutes.count)]")
+    }
+
+    private func syncAlertState() {
+        let normalizedPre = normalizedPreAlertMinutes()
+        if normalizedPre != state.preAlertMinutes {
+            state.preAlertMinutes = normalizedPre
+            state.preAlertsSpoken = Array(repeating: false, count: normalizedPre.count)
+        }
+
+        let normalizedPost = normalizedPostAlertMinutes()
+        if normalizedPost != state.postAlertMinutes {
+            state.postAlertMinutes = normalizedPost
+            state.postAlertsShown = Array(repeating: false, count: normalizedPost.count)
+        }
+
+        if state.preAlertsSpoken.count != state.preAlertMinutes.count {
+            state.preAlertsSpoken = Array(repeating: false, count: state.preAlertMinutes.count)
+        }
+        if state.postAlertsShown.count != state.postAlertMinutes.count {
+            state.postAlertsShown = Array(repeating: false, count: state.postAlertMinutes.count)
+        }
+    }
+
+    private func normalizedPreAlertMinutes() -> [Int] {
+        let minutes = state.preAlertMinutes.count == 3 ? state.preAlertMinutes : UsageState.defaultPreAlertMinutes
+        let cleaned = minutes.map { max(1, $0) }
+        return cleaned.sorted(by: >)
+    }
+
+    private func normalizedPostAlertMinutes() -> [Int] {
+        let minutes = state.postAlertMinutes.count == 5 ? state.postAlertMinutes : UsageState.defaultPostAlertMinutes
+        let cleaned = minutes.map { max(1, $0) }
+        return cleaned.sorted()
     }
 
     private func validatedAlertMinutes() -> (preAlert15: Int, preAlert5: Int) {
@@ -557,6 +586,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.spokePreAlert15 = false
             state.spokePreAlert5 = false
             state.spokePostAlert = false
+            state.preAlertsSpoken = Array(repeating: false, count: state.preAlertMinutes.count)
+            state.postAlertsShown = Array(repeating: false, count: state.postAlertMinutes.count)
+            state.limitReachedAt = nil
             UsageState.save(state)
             log("ManualResetOK")
             updateUI()

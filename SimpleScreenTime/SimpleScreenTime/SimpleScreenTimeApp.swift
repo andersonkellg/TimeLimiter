@@ -266,25 +266,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Set volume to alert level
         setSystemVolume(alertVolumeLevel)
 
-        if config.useDefaultSound {
+        switch config.audioType {
+        case .defaultBeep:
             // Play system alert sound multiple times
             NSSound.beep()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSSound.beep() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NSSound.beep() }
-        } else if let fileName = config.customSoundFileName {
-            // Play custom sound file
-            let soundURL = AlertsConfig.audioFilesURL.appendingPathComponent(fileName)
-            if FileManager.default.fileExists(atPath: soundURL.path) {
-                audioPlayer = try? AVAudioPlayer(contentsOf: soundURL)
-                audioPlayer?.play()
+
+        case .customFile:
+            if let fileName = config.customSoundFileName {
+                // Play custom sound file
+                let soundURL = AlertsConfig.audioFilesURL.appendingPathComponent(fileName)
+                if FileManager.default.fileExists(atPath: soundURL.path) {
+                    audioPlayer = try? AVAudioPlayer(contentsOf: soundURL)
+                    audioPlayer?.play()
+                } else {
+                    // Fallback to default if custom file missing
+                    NSSound.beep()
+                }
             } else {
-                // Fallback to default if custom file missing
+                // No file specified, use default
+                NSSound.beep()
+            }
+
+        case .speakMessage:
+            if let message = config.speechMessage, !message.isEmpty {
+                // Use text-to-speech
+                speakMessage(message, voiceName: config.voiceName)
+            } else {
+                // No speech message, use default beep
                 NSSound.beep()
             }
         }
 
-        // Restore original volume after sound plays (3 seconds)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+        // Restore original volume after sound plays (5 seconds to allow for speech)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
             self.setSystemVolume(originalVolume)
         }
     }
@@ -426,15 +442,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = "Configure this alert:"
         alert.alertStyle = .informational
 
-        // Create form
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 220))
+        // Create form with larger height for additional controls
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 450, height: 320))
 
         // Message text
         let msgLabel = NSTextField(labelWithString: "Alert Message:")
-        msgLabel.frame = NSRect(x: 10, y: 190, width: 380, height: 20)
+        msgLabel.frame = NSRect(x: 10, y: 290, width: 380, height: 20)
         view.addSubview(msgLabel)
 
-        let msgField = NSTextView(frame: NSRect(x: 10, y: 120, width: 380, height: 65))
+        let msgField = NSTextView(frame: NSRect(x: 10, y: 220, width: 430, height: 65))
         msgField.string = config.message
         msgField.font = NSFont.systemFont(ofSize: 13)
         let scrollView = NSScrollView(frame: msgField.frame)
@@ -444,40 +460,113 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Minutes after expiry
         let minLabel = NSTextField(labelWithString: "Minutes after time expires:")
-        minLabel.frame = NSRect(x: 10, y: 90, width: 200, height: 20)
+        minLabel.frame = NSRect(x: 10, y: 190, width: 200, height: 20)
         view.addSubview(minLabel)
 
-        let minField = NSTextField(frame: NSRect(x: 220, y: 90, width: 60, height: 24))
+        let minField = NSTextField(frame: NSRect(x: 220, y: 190, width: 60, height: 24))
         minField.stringValue = "\(config.minutesAfterExpiry)"
         view.addSubview(minField)
 
-        // Audio options
+        // Audio options with radio buttons
         let audioLabel = NSTextField(labelWithString: "Alert Sound:")
-        audioLabel.frame = NSRect(x: 10, y: 55, width: 100, height: 20)
+        audioLabel.frame = NSRect(x: 10, y: 160, width: 100, height: 20)
         view.addSubview(audioLabel)
 
-        let defaultSoundRadio = NSButton(radioButtonWithTitle: "Default Beep", target: nil, action: nil)
-        defaultSoundRadio.frame = NSRect(x: 120, y: 55, width: 120, height: 20)
-        defaultSoundRadio.state = config.useDefaultSound ? .on : .off
-        view.addSubview(defaultSoundRadio)
+        // Create radio button group (they need to be in the same matrix to be mutually exclusive)
+        let radioMatrix = NSMatrix(frame: NSRect(x: 10, y: 110, width: 430, height: 45))
+        radioMatrix.mode = .radioMode
+        radioMatrix.cellSize = NSSize(width: 430, height: 15)
+        radioMatrix.renewRows(3, columns: 1)
 
-        let customSoundRadio = NSButton(radioButtonWithTitle: "Custom Sound", target: nil, action: nil)
-        customSoundRadio.frame = NSRect(x: 250, y: 55, width: 140, height: 20)
-        customSoundRadio.state = config.useDefaultSound ? .off : .on
-        view.addSubview(customSoundRadio)
+        let defaultBeepCell = radioMatrix.cell(atRow: 0, column: 0) as! NSButtonCell
+        defaultBeepCell.title = "Default Beep"
+        defaultBeepCell.setButtonType(.radio)
+
+        let customFileCell = radioMatrix.cell(atRow: 1, column: 0) as! NSButtonCell
+        customFileCell.title = "Custom Sound File"
+        customFileCell.setButtonType(.radio)
+
+        let speakCell = radioMatrix.cell(atRow: 2, column: 0) as! NSButtonCell
+        speakCell.title = "Speak Message (Text-to-Speech)"
+        speakCell.setButtonType(.radio)
+
+        // Select current option
+        switch config.audioType {
+        case .defaultBeep:
+            radioMatrix.selectCell(atRow: 0, column: 0)
+        case .customFile:
+            radioMatrix.selectCell(atRow: 1, column: 0)
+        case .speakMessage:
+            radioMatrix.selectCell(atRow: 2, column: 0)
+        }
+
+        view.addSubview(radioMatrix)
 
         // Custom sound file selection
         let soundFileLabel = NSTextField(labelWithString: config.customSoundFileName ?? "No file selected")
-        soundFileLabel.frame = NSRect(x: 120, y: 30, width: 200, height: 20)
+        soundFileLabel.frame = NSRect(x: 30, y: 85, width: 300, height: 20)
         view.addSubview(soundFileLabel)
 
-        let chooseSoundBtn = NSButton(title: "Choose File...", target: nil, action: nil)
-        chooseSoundBtn.frame = NSRect(x: 120, y: 5, width: 100, height: 24)
+        let chooseSoundBtn = NSButton(title: "Choose Audio File...", target: nil, action: nil)
+        chooseSoundBtn.frame = NSRect(x: 340, y: 83, width: 100, height: 24)
+        chooseSoundBtn.bezelStyle = .rounded
         view.addSubview(chooseSoundBtn)
+
+        // Speech message text field
+        let speechLabel = NSTextField(labelWithString: "Text to Speak:")
+        speechLabel.frame = NSRect(x: 30, y: 60, width: 100, height: 20)
+        view.addSubview(speechLabel)
+
+        let speechField = NSTextField(frame: NSRect(x: 130, y: 60, width: 310, height: 24))
+        speechField.placeholderString = "Enter message to speak aloud..."
+        speechField.stringValue = config.speechMessage ?? ""
+        view.addSubview(speechField)
+
+        // Voice selection dropdown
+        let voiceLabel = NSTextField(labelWithString: "Voice:")
+        voiceLabel.frame = NSRect(x: 30, y: 30, width: 100, height: 20)
+        view.addSubview(voiceLabel)
+
+        let voicePopup = NSPopUpButton(frame: NSRect(x: 130, y: 28, width: 310, height: 24))
+        voicePopup.removeAllItems()
+
+        // Get all available system voices
+        let availableVoices = NSSpeechSynthesizer.availableVoices
+        var voiceNames: [String] = []
+        for voice in availableVoices {
+            if let name = NSSpeechSynthesizer.attributes(forVoice: voice)[.name] as? String {
+                voiceNames.append(name)
+                voicePopup.addItem(withTitle: name)
+            }
+        }
+
+        // Select current voice or default
+        if let currentVoice = config.voiceName, voiceNames.contains(currentVoice) {
+            voicePopup.selectItem(withTitle: currentVoice)
+        } else {
+            voicePopup.selectItem(at: 0)
+        }
+
+        view.addSubview(voicePopup)
+
+        // Test speak button
+        let testSpeakBtn = NSButton(title: "Test", target: nil, action: nil)
+        testSpeakBtn.frame = NSRect(x: 340, y: 0, width: 100, height: 24)
+        testSpeakBtn.bezelStyle = .rounded
+        view.addSubview(testSpeakBtn)
 
         alert.accessoryView = view
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
+
+        // Handle "Choose Audio File" button click
+        chooseSoundBtn.target = self
+        chooseSoundBtn.action = #selector(chooseAudioFile(_:))
+        chooseSoundBtn.tag = alertId  // Store alertId for the callback
+
+        // Handle "Test" button for speech
+        testSpeakBtn.target = self
+        testSpeakBtn.action = #selector(testSpeech(_:))
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
@@ -486,12 +575,106 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let minutes = Int(minField.stringValue), minutes >= 0 {
                 config.minutesAfterExpiry = minutes
             }
-            config.useDefaultSound = (defaultSoundRadio.state == .on)
+
+            // Determine selected audio type from radio matrix
+            let selectedRow = radioMatrix.selectedRow
+            switch selectedRow {
+            case 0:
+                config.audioType = .defaultBeep
+            case 1:
+                config.audioType = .customFile
+            case 2:
+                config.audioType = .speakMessage
+                config.speechMessage = speechField.stringValue.isEmpty ? nil : speechField.stringValue
+                config.voiceName = voicePopup.titleOfSelectedItem
+            default:
+                config.audioType = .defaultBeep
+            }
 
             alertsConfig.alerts[index] = config
             AlertsConfig.save(alertsConfig)
             log("Alert[\(alertId)]Updated")
         }
+    }
+
+    @objc private func chooseAudioFile(_ sender: NSButton) {
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Choose Audio File"
+        openPanel.allowedContentTypes = [.audio]
+        openPanel.allowsMultipleSelection = false
+
+        if openPanel.runModal() == .OK, let url = openPanel.url {
+            // Copy file to app support directory
+            let destURL = AlertsConfig.audioFilesURL.appendingPathComponent(url.lastPathComponent)
+            do {
+                try FileManager.default.createDirectory(at: AlertsConfig.audioFilesURL, withIntermediateDirectories: true)
+                if FileManager.default.fileExists(atPath: destURL.path) {
+                    try FileManager.default.removeItem(at: destURL)
+                }
+                try FileManager.default.copyItem(at: url, to: destURL)
+
+                // Update the label in the current alert view
+                if let alertWindow = NSApp.windows.first(where: { $0.isVisible }),
+                   let contentView = alertWindow.contentView,
+                   let label = contentView.subviews.first(where: { ($0 as? NSTextField)?.frame.origin.y == 85 }) as? NSTextField {
+                    label.stringValue = url.lastPathComponent
+                }
+
+                // Update config
+                let alertId = sender.tag
+                if let index = alertsConfig.alerts.firstIndex(where: { $0.id == alertId }) {
+                    alertsConfig.alerts[index].customSoundFileName = url.lastPathComponent
+                }
+            } catch {
+                let errorAlert = NSAlert()
+                errorAlert.messageText = "Error"
+                errorAlert.informativeText = "Could not copy audio file: \(error.localizedDescription)"
+                errorAlert.runModal()
+            }
+        }
+    }
+
+    @objc private func testSpeech(_ sender: NSButton) {
+        // Find the speech field and voice popup in the current alert
+        if let alertWindow = NSApp.windows.first(where: { $0.isVisible }),
+           let contentView = alertWindow.contentView {
+
+            var speechText = ""
+            var voiceName = ""
+
+            // Find the speech text field
+            for subview in contentView.subviews {
+                if let textField = subview as? NSTextField,
+                   textField.placeholderString == "Enter message to speak aloud..." {
+                    speechText = textField.stringValue
+                }
+                if let popup = subview as? NSPopUpButton,
+                   let title = popup.titleOfSelectedItem {
+                    voiceName = title
+                }
+            }
+
+            if !speechText.isEmpty {
+                speakMessage(speechText, voiceName: voiceName)
+            }
+        }
+    }
+
+    private func speakMessage(_ message: String, voiceName: String?) {
+        let synthesizer = NSSpeechSynthesizer()
+
+        // Find the voice identifier for the given name
+        if let voiceName = voiceName {
+            for voice in NSSpeechSynthesizer.availableVoices {
+                if let name = NSSpeechSynthesizer.attributes(forVoice: voice)[.name] as? String,
+                   name == voiceName {
+                    synthesizer.setVoice(voice)
+                    break
+                }
+            }
+        }
+
+        synthesizer.startSpeaking(message)
     }
 
     private func verifyPIN() -> Bool {
@@ -637,21 +820,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // Alert Configuration
+enum AlertAudioType: String, Codable {
+    case defaultBeep
+    case customFile
+    case speakMessage
+}
+
 struct AlertConfig: Codable, Identifiable {
     var id: Int
     var enabled: Bool
     var message: String
     var minutesAfterExpiry: Int  // How many minutes after 0 to show this alert
-    var useDefaultSound: Bool
-    var customSoundFileName: String?  // Stored in app support
+    var audioType: AlertAudioType
+    var customSoundFileName: String?  // For customFile type
+    var speechMessage: String?  // For speakMessage type
+    var voiceName: String?  // For speakMessage type (e.g. "Samantha")
+
+    // Legacy support for useDefaultSound
+    var useDefaultSound: Bool {
+        get { audioType == .defaultBeep }
+        set { audioType = newValue ? .defaultBeep : .customFile }
+    }
 
     static func defaultAlerts() -> [AlertConfig] {
         return [
-            AlertConfig(id: 1, enabled: true, message: "⏰ SCREEN TIME IS UP! ⏰\n\nYou've used all your screen time for today.\n\nPlease take a break from the computer.", minutesAfterExpiry: 0, useDefaultSound: true, customSoundFileName: nil),
-            AlertConfig(id: 2, enabled: true, message: "Second reminder: Please step away from the computer.", minutesAfterExpiry: 5, useDefaultSound: true, customSoundFileName: nil),
-            AlertConfig(id: 3, enabled: true, message: "Third reminder: Time to take a break now.", minutesAfterExpiry: 10, useDefaultSound: true, customSoundFileName: nil),
-            AlertConfig(id: 4, enabled: false, message: "Fourth reminder: Please close the computer.", minutesAfterExpiry: 15, useDefaultSound: true, customSoundFileName: nil),
-            AlertConfig(id: 5, enabled: false, message: "Final reminder: Computer time is over for today.", minutesAfterExpiry: 20, useDefaultSound: true, customSoundFileName: nil)
+            AlertConfig(id: 1, enabled: true, message: "⏰ SCREEN TIME IS UP! ⏰\n\nYou've used all your screen time for today.\n\nPlease take a break from the computer.", minutesAfterExpiry: 0, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
+            AlertConfig(id: 2, enabled: true, message: "Second reminder: Please step away from the computer.", minutesAfterExpiry: 5, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
+            AlertConfig(id: 3, enabled: true, message: "Third reminder: Time to take a break now.", minutesAfterExpiry: 10, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
+            AlertConfig(id: 4, enabled: false, message: "Fourth reminder: Please close the computer.", minutesAfterExpiry: 15, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil),
+            AlertConfig(id: 5, enabled: false, message: "Final reminder: Computer time is over for today.", minutesAfterExpiry: 20, audioType: .defaultBeep, customSoundFileName: nil, speechMessage: nil, voiceName: nil)
         ]
     }
 }

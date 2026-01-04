@@ -309,7 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UsageState.save(state)
     }
 
-    private func speak(_ text: String, voiceID: NSSpeechSynthesizer.VoiceName?) {
+    private func speak(_ text: String, voiceID: String?) {
         if speechSynthesizer.isSpeaking {
             speechSynthesizer.stopSpeaking()
         }
@@ -529,9 +529,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let preAlertValues = normalizedPreAlertMinutes()
         let postAlertValues = normalizedPostAlertMinutes()
 
-        let voiceOptions: [(name: String, id: NSSpeechSynthesizer.VoiceName?)] = {
-            var options: [(String, NSSpeechSynthesizer.VoiceName?)] = [("System Default", nil)]
-            let voices = NSSpeechSynthesizer.availableVoices.compactMap { voiceID -> (String, NSSpeechSynthesizer.VoiceName?) in
+        let voiceOptions: [(name: String, id: String?)] = {
+            var options: [(String, String?)] = [("System Default", nil)]
+            let voices = NSSpeechSynthesizer.availableVoices.compactMap { voiceID -> (String, String?) in
                 let attrs = NSSpeechSynthesizer.attributes(forVoice: voiceID)
                 let name = attrs[NSSpeechSynthesizer.VoiceAttributeKey.name] as? String ?? voiceID
                 return (name, voiceID)
@@ -540,7 +540,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return options
         }()
 
-        func makeVoicePopup(selectedVoiceID: NSSpeechSynthesizer.VoiceName?) -> NSPopUpButton {
+        func makeVoicePopup(selectedVoiceID: String?) -> NSPopUpButton {
             let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 200, height: 26), pullsDown: false)
             popup.removeAllItems()
             for option in voiceOptions {
@@ -722,7 +722,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let message = trimmedMessage.isEmpty ? defaultPreAlertMessage(minutes: minutes) : trimmedMessage
             preAlertMessages.append(message)
 
-            let voiceID = preAlertVoicePopups[index].selectedItem?.representedObject as? NSSpeechSynthesizer.VoiceName
+            let voiceID = preAlertVoicePopups[index].selectedItem?.representedObject as? String
             preAlertVoiceIDs.append(voiceID)
         }
 
@@ -746,7 +746,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let message = trimmedMessage.isEmpty ? defaultPostAlertMessage(minutes: minutes) : trimmedMessage
             postAlertMessages.append(message)
 
-            let voiceID = postAlertVoicePopups[index].selectedItem?.representedObject as? NSSpeechSynthesizer.VoiceName
+            let voiceID = postAlertVoicePopups[index].selectedItem?.representedObject as? String
             postAlertVoiceIDs.append(voiceID)
         }
 
@@ -782,7 +782,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let limitReachedEnabled = limitReachedEnabledButton.state == .on
         let limitReachedMessageTrimmed = limitReachedMessageField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let limitReachedMessage = limitReachedMessageTrimmed.isEmpty ? UsageState.defaultLimitReachedAlertMessage : limitReachedMessageTrimmed
-        let limitReachedVoiceID = limitReachedVoicePopup.selectedItem?.representedObject as? NSSpeechSynthesizer.VoiceName
+        let limitReachedVoiceID = limitReachedVoicePopup.selectedItem?.representedObject as? String
 
         state.preAlertMinutes = preAlertInputs
         state.postAlertMinutes = postAlertInputs
@@ -909,11 +909,11 @@ struct UsageState: Codable {
     var postAlertEnabled: [Bool]
     var preAlertMessages: [String]
     var postAlertMessages: [String]
-    var preAlertVoiceIDs: [NSSpeechSynthesizer.VoiceName?]
-    var postAlertVoiceIDs: [NSSpeechSynthesizer.VoiceName?]
+    var preAlertVoiceIDs: [String?]
+    var postAlertVoiceIDs: [String?]
     var limitReachedAlertEnabled: Bool
     var limitReachedAlertMessage: String
-    var limitReachedAlertVoiceID: NSSpeechSynthesizer.VoiceName?
+    var limitReachedAlertVoiceID: String?
 
     private enum CodingKeys: String, CodingKey {
         case dayStart
@@ -965,11 +965,11 @@ struct UsageState: Codable {
          postAlertEnabled: [Bool],
          preAlertMessages: [String],
          postAlertMessages: [String],
-         preAlertVoiceIDs: [NSSpeechSynthesizer.VoiceName?],
-         postAlertVoiceIDs: [NSSpeechSynthesizer.VoiceName?],
+         preAlertVoiceIDs: [String?],
+         postAlertVoiceIDs: [String?],
          limitReachedAlertEnabled: Bool,
          limitReachedAlertMessage: String,
-         limitReachedAlertVoiceID: NSSpeechSynthesizer.VoiceName?) {
+         limitReachedAlertVoiceID: String?) {
         self.dayStart = dayStart
         self.secondsUsedToday = secondsUsedToday
         self.didHitLimitToday = didHitLimitToday
@@ -1023,20 +1023,14 @@ struct UsageState: Codable {
             ?? UsageState.defaultPreAlertMinutes.map { UsageState.defaultPreAlertMessage(minutes: $0) }
         postAlertMessages = try container.decodeIfPresent([String].self, forKey: .postAlertMessages)
             ?? UsageState.defaultPostAlertMinutes.map { UsageState.defaultPostAlertMessage(minutes: $0) }
-        let decodedPreAlertVoiceIDs = try container.decodeIfPresent([String?].self, forKey: .preAlertVoiceIDs)
+        preAlertVoiceIDs = try container.decodeIfPresent([String?].self, forKey: .preAlertVoiceIDs)
             ?? Array(repeating: nil, count: preAlertMinutes.count)
-        preAlertVoiceIDs = decodedPreAlertVoiceIDs.map { $0 }
-        let decodedPostAlertVoiceIDs = try container.decodeIfPresent([String?].self, forKey: .postAlertVoiceIDs)
+        postAlertVoiceIDs = try container.decodeIfPresent([String?].self, forKey: .postAlertVoiceIDs)
             ?? Array(repeating: nil, count: postAlertMinutes.count)
-        postAlertVoiceIDs = decodedPostAlertVoiceIDs.map { $0 }
         limitReachedAlertEnabled = try container.decodeIfPresent(Bool.self, forKey: .limitReachedAlertEnabled) ?? true
         limitReachedAlertMessage = try container.decodeIfPresent(String.self, forKey: .limitReachedAlertMessage)
             ?? UsageState.defaultLimitReachedAlertMessage
-        if let decodedVoiceID = try container.decodeIfPresent(String.self, forKey: .limitReachedAlertVoiceID) {
-            limitReachedAlertVoiceID = decodedVoiceID
-        } else {
-            limitReachedAlertVoiceID = nil
-        }
+        limitReachedAlertVoiceID = try container.decodeIfPresent(String.self, forKey: .limitReachedAlertVoiceID)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1062,13 +1056,11 @@ struct UsageState: Codable {
         try container.encode(postAlertEnabled, forKey: .postAlertEnabled)
         try container.encode(preAlertMessages, forKey: .preAlertMessages)
         try container.encode(postAlertMessages, forKey: .postAlertMessages)
-        let encodedPreAlertVoiceIDs = preAlertVoiceIDs.map { $0 as String? }
-        let encodedPostAlertVoiceIDs = postAlertVoiceIDs.map { $0 as String? }
-        try container.encode(encodedPreAlertVoiceIDs, forKey: .preAlertVoiceIDs)
-        try container.encode(encodedPostAlertVoiceIDs, forKey: .postAlertVoiceIDs)
+        try container.encode(preAlertVoiceIDs, forKey: .preAlertVoiceIDs)
+        try container.encode(postAlertVoiceIDs, forKey: .postAlertVoiceIDs)
         try container.encode(limitReachedAlertEnabled, forKey: .limitReachedAlertEnabled)
         try container.encode(limitReachedAlertMessage, forKey: .limitReachedAlertMessage)
-        try container.encodeIfPresent(limitReachedAlertVoiceID as String?, forKey: .limitReachedAlertVoiceID)
+        try container.encodeIfPresent(limitReachedAlertVoiceID, forKey: .limitReachedAlertVoiceID)
     }
 
     static func load() -> UsageState {

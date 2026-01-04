@@ -8,6 +8,25 @@ struct SimpleScreenTimeApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private final class AlertPreviewContext: NSObject {
+        let minutesField: NSTextField?
+        let fallbackMinutes: Int
+        let messageField: NSTextField
+        let voicePopup: NSPopUpButton
+        let defaultMessage: (Int) -> String
+
+        init(minutesField: NSTextField?,
+             fallbackMinutes: Int,
+             messageField: NSTextField,
+             voicePopup: NSPopUpButton,
+             defaultMessage: @escaping (Int) -> String) {
+            self.minutesField = minutesField
+            self.fallbackMinutes = fallbackMinutes
+            self.messageField = messageField
+            self.voicePopup = voicePopup
+            self.defaultMessage = defaultMessage
+        }
+    }
 
     // ====== CONFIG ======
     private let dailyLimitSeconds: TimeInterval = 60 * 60  // 1 hour
@@ -326,6 +345,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         speechSynthesizer.startSpeaking(text)
     }
 
+    @objc private func previewAlertSpeech(_ sender: NSButton) {
+        guard let context = sender.representedObject as? AlertPreviewContext else { return }
+
+        var minutes = context.fallbackMinutes
+        if let minutesField = context.minutesField {
+            let trimmed = minutesField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value = Int(trimmed), value > 0 {
+                minutes = value
+            }
+        }
+
+        let trimmedMessage = context.messageField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let template = trimmedMessage.isEmpty ? context.defaultMessage(minutes) : trimmedMessage
+        let message = resolvedAlertMessage(template: template, minutes: minutes)
+        let voiceID = context.voicePopup.selectedItem?.representedObject as? String
+        speak(message, voiceID: voiceID)
+    }
+
     private func showAnnoyingPopupIfNeeded() {
         let now = Date()
         let maxAnnoyancePopups = max(0, state.maxAnnoyancePopups)
@@ -567,11 +604,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let limitReachedMessageField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 22))
         limitReachedMessageField.stringValue = state.limitReachedAlertMessage
         let limitReachedVoicePopup = makeVoicePopup(selectedVoiceID: state.limitReachedAlertVoiceID)
+        let limitReachedPreviewButton = NSButton(title: "Preview", target: self, action: #selector(previewAlertSpeech(_:)))
+        limitReachedPreviewButton.representedObject = AlertPreviewContext(
+            minutesField: nil,
+            fallbackMinutes: 0,
+            messageField: limitReachedMessageField,
+            voicePopup: limitReachedVoicePopup,
+            defaultMessage: { _ in UsageState.defaultLimitReachedAlertMessage }
+        )
 
         var preAlertEnabledButtons: [NSButton] = []
         var preAlertFields: [NSTextField] = []
         var preAlertMessageFields: [NSTextField] = []
         var preAlertVoicePopups: [NSPopUpButton] = []
+        var preAlertPreviewButtons: [NSButton] = []
 
         for index in 0..<3 {
             let enabledButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
@@ -587,16 +633,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let voicePopup = makeVoicePopup(selectedVoiceID: state.preAlertVoiceIDs[safe: index] ?? nil)
 
+            let previewButton = NSButton(title: "Preview", target: self, action: #selector(previewAlertSpeech(_:)))
+            previewButton.representedObject = AlertPreviewContext(
+                minutesField: minutesField,
+                fallbackMinutes: value,
+                messageField: messageField,
+                voicePopup: voicePopup,
+                defaultMessage: defaultPreAlertMessage(minutes:)
+            )
+
             preAlertEnabledButtons.append(enabledButton)
             preAlertFields.append(minutesField)
             preAlertMessageFields.append(messageField)
             preAlertVoicePopups.append(voicePopup)
+            preAlertPreviewButtons.append(previewButton)
         }
 
         var postAlertEnabledButtons: [NSButton] = []
         var postAlertFields: [NSTextField] = []
         var postAlertMessageFields: [NSTextField] = []
         var postAlertVoicePopups: [NSPopUpButton] = []
+        var postAlertPreviewButtons: [NSButton] = []
 
         for index in 0..<5 {
             let enabledButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
@@ -612,10 +669,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let voicePopup = makeVoicePopup(selectedVoiceID: state.postAlertVoiceIDs[safe: index] ?? nil)
 
+            let previewButton = NSButton(title: "Preview", target: self, action: #selector(previewAlertSpeech(_:)))
+            previewButton.representedObject = AlertPreviewContext(
+                minutesField: minutesField,
+                fallbackMinutes: value,
+                messageField: messageField,
+                voicePopup: voicePopup,
+                defaultMessage: defaultPostAlertMessage(minutes:)
+            )
+
             postAlertEnabledButtons.append(enabledButton)
             postAlertFields.append(minutesField)
             postAlertMessageFields.append(messageField)
             postAlertVoicePopups.append(voicePopup)
+            postAlertPreviewButtons.append(previewButton)
         }
 
         func headerLabel(_ text: String) -> NSTextField {
@@ -629,13 +696,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSTextField(labelWithString: "On"),
                 NSTextField(labelWithString: "Minutes"),
                 NSTextField(labelWithString: "Spoken Message"),
-                NSTextField(labelWithString: "Voice")
+                NSTextField(labelWithString: "Voice"),
+                NSTextField(labelWithString: "Preview")
             ]
         }
 
         let limitReachedGrid = NSGridView(views: [
             gridHeaderRow(),
-            [limitReachedEnabledButton, NSTextField(labelWithString: "Limit reached"), limitReachedMessageField, limitReachedVoicePopup]
+            [limitReachedEnabledButton, NSTextField(labelWithString: "Limit reached"), limitReachedMessageField, limitReachedVoicePopup, limitReachedPreviewButton]
         ])
         limitReachedGrid.rowSpacing = 6
         limitReachedGrid.columnSpacing = 8
@@ -646,7 +714,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 preAlertEnabledButtons[index],
                 preAlertFields[index],
                 preAlertMessageFields[index],
-                preAlertVoicePopups[index]
+                preAlertVoicePopups[index],
+                preAlertPreviewButtons[index]
             ]
         }
         let preAlertGrid = NSGridView(views: [gridHeaderRow()] + preAlertRows)
@@ -659,7 +728,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 postAlertEnabledButtons[index],
                 postAlertFields[index],
                 postAlertMessageFields[index],
-                postAlertVoicePopups[index]
+                postAlertVoicePopups[index],
+                postAlertPreviewButtons[index]
             ]
         }
         let postAlertGrid = NSGridView(views: [gridHeaderRow()] + postAlertRows)
@@ -803,12 +873,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.preAlert15Minutes = preAlertInputs.first ?? UsageState.defaultPreAlert15Minutes
         state.preAlert5Minutes = preAlertInputs.dropFirst().first ?? UsageState.defaultPreAlert5Minutes
         state.maxAnnoyancePopups = postAlertEnabled.filter { $0 }.count
-        popupsShownToday = min(popupsShownToday, state.maxAnnoyancePopups)
+        let remaining = remainingSeconds()
+        state.preAlertsSpoken = preAlertInputs.map { remaining <= TimeInterval($0 * 60) }
+
+        if let limitReachedAt = state.limitReachedAt {
+            let elapsed = Date().timeIntervalSince(limitReachedAt)
+            state.postAlertsShown = postAlertInputs.map { elapsed >= TimeInterval($0 * 60) }
+        } else {
+            state.postAlertsShown = Array(repeating: false, count: postAlertInputs.count)
+        }
+
+        state.spokePostAlert = state.didHitLimitToday
+        state.spokePreAlert15 = state.preAlertsSpoken.first ?? false
+        state.spokePreAlert5 = state.preAlertsSpoken.dropFirst().first ?? false
+        popupsShownToday = min(state.postAlertsShown.filter { $0 }.count, state.maxAnnoyancePopups)
         state.popupsShownToday = popupsShownToday
-        state.preAlertsSpoken = Array(repeating: false, count: preAlertInputs.count)
-        state.postAlertsShown = Array(repeating: false, count: postAlertInputs.count)
-        state.spokePreAlert15 = false
-        state.spokePreAlert5 = false
         UsageState.save(state)
         log("EditAlertsOK[pre=\(preAlertInputs),post=\(postAlertInputs)]")
         updateUI()

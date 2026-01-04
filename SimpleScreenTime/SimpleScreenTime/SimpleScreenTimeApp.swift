@@ -474,7 +474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create radio button group (they need to be in the same matrix to be mutually exclusive)
         let radioMatrix = NSMatrix(frame: NSRect(x: 10, y: 110, width: 430, height: 45))
-        radioMatrix.mode = .radioMode
+        radioMatrix.mode = .radio
         radioMatrix.cellSize = NSSize(width: 430, height: 15)
         radioMatrix.renewRows(3, columns: 1)
 

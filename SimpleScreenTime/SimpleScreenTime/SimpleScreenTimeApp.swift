@@ -282,12 +282,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !preAlertMinutes.isEmpty else { return }
 
         for index in preAlertMinutes.indices.reversed() {
+            guard state.preAlertEnabled[safe: index] ?? true else { continue }
             let threshold = TimeInterval(preAlertMinutes[index] * 60)
             guard remainingSeconds <= threshold else { continue }
             guard index < state.preAlertsSpoken.count, !state.preAlertsSpoken[index] else { continue }
 
             state.preAlertsSpoken[index] = true
-            speak("\(preAlertMinutes[index]) minutes remaining.")
+            let template = state.preAlertMessages[safe: index] ?? defaultPreAlertMessage(minutes: preAlertMinutes[index])
+            let message = resolvedAlertMessage(template: template, minutes: preAlertMinutes[index])
+            let voiceID = state.preAlertVoiceIDs[safe: index] ?? nil
+            speak(message, voiceID: voiceID)
             log("SpokenPreAlert\(index + 1)")
             UsageState.save(state)
             break
@@ -296,15 +300,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func speakPostAlertIfNeeded() {
         guard !state.spokePostAlert else { return }
+        guard state.limitReachedAlertEnabled else { return }
         state.spokePostAlert = true
-        speak("Screen time is up. Please take a break.")
+        let template = state.limitReachedAlertMessage
+        let message = resolvedAlertMessage(template: template, minutes: 0)
+        speak(message, voiceID: state.limitReachedAlertVoiceID)
         log("SpokenPostAlert")
         UsageState.save(state)
     }
 
-    private func speak(_ text: String) {
+    private func speak(_ text: String, voiceID: NSSpeechSynthesizer.VoiceName?) {
         if speechSynthesizer.isSpeaking {
             speechSynthesizer.stopSpeaking()
+        }
+        if let voiceID, NSSpeechSynthesizer.availableVoices.contains(voiceID) {
+            speechSynthesizer.setVoice(voiceID)
+        } else {
+            speechSynthesizer.setVoice(nil)
         }
         speechSynthesizer.startSpeaking(text)
     }
@@ -318,10 +330,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard popupsShownToday < maxAnnoyancePopups else { return }
         guard let nextIndex = postAlertMinutes.indices.first(where: { index in
             let threshold = TimeInterval(postAlertMinutes[index] * 60)
-            return !state.postAlertsShown[index] && now.timeIntervalSince(limitReachedAt) >= threshold
+            return (state.postAlertEnabled[safe: index] ?? true)
+                && !state.postAlertsShown[index]
+                && now.timeIntervalSince(limitReachedAt) >= threshold
         }) else {
             return
         }
+
+        let template = state.postAlertMessages[safe: nextIndex] ?? defaultPostAlertMessage(minutes: postAlertMinutes[nextIndex])
+        let message = resolvedAlertMessage(template: template, minutes: postAlertMinutes[nextIndex])
+        let voiceID = state.postAlertVoiceIDs[safe: nextIndex] ?? nil
+        speak(message, voiceID: voiceID)
 
         state.postAlertsShown[nextIndex] = true
         popupsShownToday += 1
@@ -335,7 +354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = """
         You've used all your screen time for today.
 
-        Please take a break from the computer.
+        \(message)
         """
         alert.addButton(withTitle: "OK, I understand")
 
@@ -365,18 +384,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if state.postAlertsShown.count != state.postAlertMinutes.count {
             state.postAlertsShown = Array(repeating: false, count: state.postAlertMinutes.count)
         }
+        if state.preAlertEnabled.count != state.preAlertMinutes.count {
+            state.preAlertEnabled = Array(repeating: true, count: state.preAlertMinutes.count)
+        }
+        if state.postAlertEnabled.count != state.postAlertMinutes.count {
+            state.postAlertEnabled = Array(repeating: true, count: state.postAlertMinutes.count)
+        }
+        if state.preAlertMessages.count != state.preAlertMinutes.count {
+            state.preAlertMessages = state.preAlertMinutes.map { defaultPreAlertMessage(minutes: $0) }
+        }
+        if state.postAlertMessages.count != state.postAlertMinutes.count {
+            state.postAlertMessages = state.postAlertMinutes.map { defaultPostAlertMessage(minutes: $0) }
+        }
+        if state.preAlertVoiceIDs.count != state.preAlertMinutes.count {
+            state.preAlertVoiceIDs = Array(repeating: nil, count: state.preAlertMinutes.count)
+        }
+        if state.postAlertVoiceIDs.count != state.postAlertMinutes.count {
+            state.postAlertVoiceIDs = Array(repeating: nil, count: state.postAlertMinutes.count)
+        }
     }
 
     private func normalizedPreAlertMinutes() -> [Int] {
         let minutes = state.preAlertMinutes.count == 3 ? state.preAlertMinutes : UsageState.defaultPreAlertMinutes
-        let cleaned = minutes.map { max(1, $0) }
-        return cleaned.sorted(by: >)
+        return minutes.map { max(1, $0) }
     }
 
     private func normalizedPostAlertMinutes() -> [Int] {
         let minutes = state.postAlertMinutes.count == 5 ? state.postAlertMinutes : UsageState.defaultPostAlertMinutes
-        let cleaned = minutes.map { max(1, $0) }
-        return cleaned.sorted()
+        return minutes.map { max(1, $0) }
+    }
+
+    private func defaultPreAlertMessage(minutes: Int) -> String {
+        "\(minutes) minutes remaining."
+    }
+
+    private func defaultPostAlertMessage(minutes: Int) -> String {
+        "\(minutes) minutes over your limit. Please take a break."
+    }
+
+    private func resolvedAlertMessage(template: String, minutes: Int) -> String {
+        template.replacingOccurrences(of: "{minutes}", with: "\(minutes)")
     }
 
     @objc private func editTodayLimit() {
@@ -472,69 +519,235 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        syncAlertState()
+
         let settingsAlert = NSAlert()
         settingsAlert.messageText = "Edit Alert Settings"
-        settingsAlert.informativeText = "Set pre-alert minutes and post-alert minutes."
+        settingsAlert.informativeText = "Toggle alerts on/off, adjust minutes, and edit spoken messages. Use {minutes} in a message to insert the alert minutes."
         settingsAlert.alertStyle = .informational
 
         let preAlertValues = normalizedPreAlertMinutes()
         let postAlertValues = normalizedPostAlertMinutes()
 
-        let preAlertFields = (0..<3).map { index -> NSTextField in
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 22))
-            field.placeholderString = "\(preAlertValues[safe: index] ?? UsageState.defaultPreAlertMinutes[index])"
-            field.stringValue = "\(preAlertValues[safe: index] ?? UsageState.defaultPreAlertMinutes[index])"
-            return field
+        let voiceOptions: [(name: String, id: NSSpeechSynthesizer.VoiceName?)] = {
+            var options: [(String, NSSpeechSynthesizer.VoiceName?)] = [("System Default", nil)]
+            let voices = NSSpeechSynthesizer.availableVoices.compactMap { voiceID -> (String, NSSpeechSynthesizer.VoiceName?) in
+                let attrs = NSSpeechSynthesizer.attributes(forVoice: voiceID)
+                let name = attrs[NSSpeechSynthesizer.VoiceAttributeKey.name] as? String ?? voiceID
+                return (name, voiceID)
+            }.sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+            options.append(contentsOf: voices)
+            return options
+        }()
+
+        func makeVoicePopup(selectedVoiceID: NSSpeechSynthesizer.VoiceName?) -> NSPopUpButton {
+            let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 200, height: 26), pullsDown: false)
+            popup.removeAllItems()
+            for option in voiceOptions {
+                let item = NSMenuItem(title: option.name, action: nil, keyEquivalent: "")
+                item.representedObject = option.id
+                popup.menu?.addItem(item)
+            }
+            if let selectedVoiceID,
+               let selectedItem = popup.itemArray.first(where: { ($0.representedObject as? String) == selectedVoiceID }) {
+                popup.select(selectedItem)
+            } else {
+                popup.selectItem(at: 0)
+            }
+            return popup
         }
 
-        let postAlertFields = (0..<5).map { index -> NSTextField in
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 22))
-            field.placeholderString = "\(postAlertValues[safe: index] ?? UsageState.defaultPostAlertMinutes[index])"
-            field.stringValue = "\(postAlertValues[safe: index] ?? UsageState.defaultPostAlertMinutes[index])"
-            return field
+        let limitReachedEnabledButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+        limitReachedEnabledButton.state = state.limitReachedAlertEnabled ? .on : .off
+        let limitReachedMessageField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 22))
+        limitReachedMessageField.stringValue = state.limitReachedAlertMessage
+        let limitReachedVoicePopup = makeVoicePopup(selectedVoiceID: state.limitReachedAlertVoiceID)
+
+        var preAlertEnabledButtons: [NSButton] = []
+        var preAlertFields: [NSTextField] = []
+        var preAlertMessageFields: [NSTextField] = []
+        var preAlertVoicePopups: [NSPopUpButton] = []
+
+        for index in 0..<3 {
+            let enabledButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+            enabledButton.state = (state.preAlertEnabled[safe: index] ?? true) ? .on : .off
+
+            let value = preAlertValues[safe: index] ?? UsageState.defaultPreAlertMinutes[index]
+            let minutesField = NSTextField(frame: NSRect(x: 0, y: 0, width: 70, height: 22))
+            minutesField.stringValue = "\(value)"
+
+            let messageField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 22))
+            let message = state.preAlertMessages[safe: index] ?? defaultPreAlertMessage(minutes: value)
+            messageField.stringValue = message
+
+            let voicePopup = makeVoicePopup(selectedVoiceID: state.preAlertVoiceIDs[safe: index] ?? nil)
+
+            preAlertEnabledButtons.append(enabledButton)
+            preAlertFields.append(minutesField)
+            preAlertMessageFields.append(messageField)
+            preAlertVoicePopups.append(voicePopup)
         }
 
-        let preAlertLabel = NSTextField(labelWithString: "Pre-alerts (minutes before limit):")
-        let postAlertLabel = NSTextField(labelWithString: "Post-alerts (minutes after limit):")
+        var postAlertEnabledButtons: [NSButton] = []
+        var postAlertFields: [NSTextField] = []
+        var postAlertMessageFields: [NSTextField] = []
+        var postAlertVoicePopups: [NSPopUpButton] = []
 
-        let preAlertRows = preAlertFields.enumerated().map { index, field -> NSStackView in
-            let label = NSTextField(labelWithString: "Pre-alert \(index + 1):")
-            let row = NSStackView(views: [label, field])
-            row.orientation = .horizontal
-            row.spacing = 8
-            return row
+        for index in 0..<5 {
+            let enabledButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+            enabledButton.state = (state.postAlertEnabled[safe: index] ?? true) ? .on : .off
+
+            let value = postAlertValues[safe: index] ?? UsageState.defaultPostAlertMinutes[index]
+            let minutesField = NSTextField(frame: NSRect(x: 0, y: 0, width: 70, height: 22))
+            minutesField.stringValue = "\(value)"
+
+            let messageField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 22))
+            let message = state.postAlertMessages[safe: index] ?? defaultPostAlertMessage(minutes: value)
+            messageField.stringValue = message
+
+            let voicePopup = makeVoicePopup(selectedVoiceID: state.postAlertVoiceIDs[safe: index] ?? nil)
+
+            postAlertEnabledButtons.append(enabledButton)
+            postAlertFields.append(minutesField)
+            postAlertMessageFields.append(messageField)
+            postAlertVoicePopups.append(voicePopup)
         }
 
-        let postAlertRows = postAlertFields.enumerated().map { index, field -> NSStackView in
-            let label = NSTextField(labelWithString: "Post-alert \(index + 1):")
-            let row = NSStackView(views: [label, field])
-            row.orientation = .horizontal
-            row.spacing = 8
-            return row
+        func headerLabel(_ text: String) -> NSTextField {
+            let label = NSTextField(labelWithString: text)
+            label.font = NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
+            return label
         }
 
-        let stack = NSStackView(views: [preAlertLabel] + preAlertRows + [postAlertLabel] + postAlertRows)
+        func gridHeaderRow() -> [NSView] {
+            [
+                NSTextField(labelWithString: "On"),
+                NSTextField(labelWithString: "Minutes"),
+                NSTextField(labelWithString: "Spoken Message"),
+                NSTextField(labelWithString: "Voice")
+            ]
+        }
+
+        let limitReachedGrid = NSGridView(views: [
+            gridHeaderRow(),
+            [limitReachedEnabledButton, NSTextField(labelWithString: "Limit reached"), limitReachedMessageField, limitReachedVoicePopup]
+        ])
+        limitReachedGrid.rowSpacing = 6
+        limitReachedGrid.columnSpacing = 8
+        limitReachedGrid.column(at: 2).width = 280
+
+        let preAlertRows = preAlertFields.indices.map { index -> [NSView] in
+            [
+                preAlertEnabledButtons[index],
+                preAlertFields[index],
+                preAlertMessageFields[index],
+                preAlertVoicePopups[index]
+            ]
+        }
+        let preAlertGrid = NSGridView(views: [gridHeaderRow()] + preAlertRows)
+        preAlertGrid.rowSpacing = 6
+        preAlertGrid.columnSpacing = 8
+        preAlertGrid.column(at: 2).width = 280
+
+        let postAlertRows = postAlertFields.indices.map { index -> [NSView] in
+            [
+                postAlertEnabledButtons[index],
+                postAlertFields[index],
+                postAlertMessageFields[index],
+                postAlertVoicePopups[index]
+            ]
+        }
+        let postAlertGrid = NSGridView(views: [gridHeaderRow()] + postAlertRows)
+        postAlertGrid.rowSpacing = 6
+        postAlertGrid.columnSpacing = 8
+        postAlertGrid.column(at: 2).width = 280
+
+        let stack = NSStackView(views: [
+            headerLabel("Limit Reached Announcement"),
+            limitReachedGrid,
+            headerLabel("Pre-alerts (minutes before limit)"),
+            preAlertGrid,
+            headerLabel("Post-alerts (minutes after limit)"),
+            postAlertGrid
+        ])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 12, right: 0)
 
-        settingsAlert.accessoryView = stack
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 720, height: 420))
+        scrollView.hasVerticalScroller = true
+        scrollView.borderType = .noBorder
+        scrollView.documentView = stack
+        stack.frame = NSRect(x: 0, y: 0, width: 720, height: stack.fittingSize.height)
+
+        settingsAlert.accessoryView = scrollView
         settingsAlert.addButton(withTitle: "Save")
         settingsAlert.addButton(withTitle: "Cancel")
 
         let settingsResp = settingsAlert.runModal()
         guard settingsResp == .alertFirstButtonReturn else { return }
 
-        let preAlertInputs = preAlertFields.compactMap { Int($0.stringValue) }
-        let postAlertInputs = postAlertFields.compactMap { Int($0.stringValue) }
-        guard preAlertInputs.count == preAlertFields.count,
-              postAlertInputs.count == postAlertFields.count else {
-            let error = NSAlert()
-            error.messageText = "Invalid Input"
-            error.informativeText = "Please enter whole numbers for all alert settings."
-            error.runModal()
-            return
+        func parseMinutes(field: NSTextField, fallback: Int, enabled: Bool) -> Int? {
+            let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                return enabled ? nil : fallback
+            }
+            if let value = Int(trimmed) {
+                return value
+            }
+            return enabled ? nil : fallback
+        }
+
+        let preAlertEnabled = preAlertEnabledButtons.map { $0.state == .on }
+        let postAlertEnabled = postAlertEnabledButtons.map { $0.state == .on }
+
+        var preAlertInputs: [Int] = []
+        var preAlertMessages: [String] = []
+        var preAlertVoiceIDs: [String?] = []
+
+        for index in preAlertFields.indices {
+            let enabled = preAlertEnabled[index]
+            let fallback = preAlertValues[safe: index] ?? UsageState.defaultPreAlertMinutes[index]
+            guard let minutes = parseMinutes(field: preAlertFields[index], fallback: fallback, enabled: enabled) else {
+                let error = NSAlert()
+                error.messageText = "Invalid Input"
+                error.informativeText = "Please enter whole numbers for enabled pre-alerts."
+                error.runModal()
+                return
+            }
+            preAlertInputs.append(minutes)
+
+            let trimmedMessage = preAlertMessageFields[index].stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = trimmedMessage.isEmpty ? defaultPreAlertMessage(minutes: minutes) : trimmedMessage
+            preAlertMessages.append(message)
+
+            let voiceID = preAlertVoicePopups[index].selectedItem?.representedObject as? NSSpeechSynthesizer.VoiceName
+            preAlertVoiceIDs.append(voiceID)
+        }
+
+        var postAlertInputs: [Int] = []
+        var postAlertMessages: [String] = []
+        var postAlertVoiceIDs: [String?] = []
+
+        for index in postAlertFields.indices {
+            let enabled = postAlertEnabled[index]
+            let fallback = postAlertValues[safe: index] ?? UsageState.defaultPostAlertMinutes[index]
+            guard let minutes = parseMinutes(field: postAlertFields[index], fallback: fallback, enabled: enabled) else {
+                let error = NSAlert()
+                error.messageText = "Invalid Input"
+                error.informativeText = "Please enter whole numbers for enabled post-alerts."
+                error.runModal()
+                return
+            }
+            postAlertInputs.append(minutes)
+
+            let trimmedMessage = postAlertMessageFields[index].stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = trimmedMessage.isEmpty ? defaultPostAlertMessage(minutes: minutes) : trimmedMessage
+            postAlertMessages.append(message)
+
+            let voiceID = postAlertVoicePopups[index].selectedItem?.representedObject as? NSSpeechSynthesizer.VoiceName
+            postAlertVoiceIDs.append(voiceID)
         }
 
         guard preAlertInputs.allSatisfy({ $0 >= 1 && $0 <= 1440 }),
@@ -566,11 +779,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let limitReachedEnabled = limitReachedEnabledButton.state == .on
+        let limitReachedMessageTrimmed = limitReachedMessageField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let limitReachedMessage = limitReachedMessageTrimmed.isEmpty ? UsageState.defaultLimitReachedAlertMessage : limitReachedMessageTrimmed
+        let limitReachedVoiceID = limitReachedVoicePopup.selectedItem?.representedObject as? NSSpeechSynthesizer.VoiceName
+
         state.preAlertMinutes = preAlertInputs
         state.postAlertMinutes = postAlertInputs
+        state.preAlertEnabled = preAlertEnabled
+        state.postAlertEnabled = postAlertEnabled
+        state.preAlertMessages = preAlertMessages
+        state.postAlertMessages = postAlertMessages
+        state.preAlertVoiceIDs = preAlertVoiceIDs
+        state.postAlertVoiceIDs = postAlertVoiceIDs
+        state.limitReachedAlertEnabled = limitReachedEnabled
+        state.limitReachedAlertMessage = limitReachedMessage
+        state.limitReachedAlertVoiceID = limitReachedVoiceID
         state.preAlert15Minutes = preAlertInputs.first ?? UsageState.defaultPreAlert15Minutes
         state.preAlert5Minutes = preAlertInputs.dropFirst().first ?? UsageState.defaultPreAlert5Minutes
-        state.maxAnnoyancePopups = postAlertInputs.count
+        state.maxAnnoyancePopups = postAlertEnabled.filter { $0 }.count
         popupsShownToday = min(popupsShownToday, state.maxAnnoyancePopups)
         state.popupsShownToday = popupsShownToday
         state.preAlertsSpoken = Array(repeating: false, count: preAlertInputs.count)
@@ -678,6 +905,15 @@ struct UsageState: Codable {
     var preAlertsSpoken: [Bool]
     var postAlertsShown: [Bool]
     var limitReachedAt: Date?
+    var preAlertEnabled: [Bool]
+    var postAlertEnabled: [Bool]
+    var preAlertMessages: [String]
+    var postAlertMessages: [String]
+    var preAlertVoiceIDs: [NSSpeechSynthesizer.VoiceName?]
+    var postAlertVoiceIDs: [NSSpeechSynthesizer.VoiceName?]
+    var limitReachedAlertEnabled: Bool
+    var limitReachedAlertMessage: String
+    var limitReachedAlertVoiceID: NSSpeechSynthesizer.VoiceName?
 
     private enum CodingKeys: String, CodingKey {
         case dayStart
@@ -697,6 +933,15 @@ struct UsageState: Codable {
         case preAlertsSpoken
         case postAlertsShown
         case limitReachedAt
+        case preAlertEnabled
+        case postAlertEnabled
+        case preAlertMessages
+        case postAlertMessages
+        case preAlertVoiceIDs
+        case postAlertVoiceIDs
+        case limitReachedAlertEnabled
+        case limitReachedAlertMessage
+        case limitReachedAlertVoiceID
     }
 
     init(dayStart: Date,
@@ -715,7 +960,16 @@ struct UsageState: Codable {
          postAlertMinutes: [Int],
          preAlertsSpoken: [Bool],
          postAlertsShown: [Bool],
-         limitReachedAt: Date?) {
+         limitReachedAt: Date?,
+         preAlertEnabled: [Bool],
+         postAlertEnabled: [Bool],
+         preAlertMessages: [String],
+         postAlertMessages: [String],
+         preAlertVoiceIDs: [NSSpeechSynthesizer.VoiceName?],
+         postAlertVoiceIDs: [NSSpeechSynthesizer.VoiceName?],
+         limitReachedAlertEnabled: Bool,
+         limitReachedAlertMessage: String,
+         limitReachedAlertVoiceID: NSSpeechSynthesizer.VoiceName?) {
         self.dayStart = dayStart
         self.secondsUsedToday = secondsUsedToday
         self.didHitLimitToday = didHitLimitToday
@@ -733,6 +987,15 @@ struct UsageState: Codable {
         self.preAlertsSpoken = preAlertsSpoken
         self.postAlertsShown = postAlertsShown
         self.limitReachedAt = limitReachedAt
+        self.preAlertEnabled = preAlertEnabled
+        self.postAlertEnabled = postAlertEnabled
+        self.preAlertMessages = preAlertMessages
+        self.postAlertMessages = postAlertMessages
+        self.preAlertVoiceIDs = preAlertVoiceIDs
+        self.postAlertVoiceIDs = postAlertVoiceIDs
+        self.limitReachedAlertEnabled = limitReachedAlertEnabled
+        self.limitReachedAlertMessage = limitReachedAlertMessage
+        self.limitReachedAlertVoiceID = limitReachedAlertVoiceID
     }
 
     init(from decoder: Decoder) throws {
@@ -754,6 +1017,26 @@ struct UsageState: Codable {
         preAlertsSpoken = try container.decodeIfPresent([Bool].self, forKey: .preAlertsSpoken) ?? Array(repeating: false, count: preAlertMinutes.count)
         postAlertsShown = try container.decodeIfPresent([Bool].self, forKey: .postAlertsShown) ?? Array(repeating: false, count: postAlertMinutes.count)
         limitReachedAt = try container.decodeIfPresent(Date.self, forKey: .limitReachedAt)
+        preAlertEnabled = try container.decodeIfPresent([Bool].self, forKey: .preAlertEnabled) ?? UsageState.defaultPreAlertEnabled
+        postAlertEnabled = try container.decodeIfPresent([Bool].self, forKey: .postAlertEnabled) ?? UsageState.defaultPostAlertEnabled
+        preAlertMessages = try container.decodeIfPresent([String].self, forKey: .preAlertMessages)
+            ?? UsageState.defaultPreAlertMinutes.map { UsageState.defaultPreAlertMessage(minutes: $0) }
+        postAlertMessages = try container.decodeIfPresent([String].self, forKey: .postAlertMessages)
+            ?? UsageState.defaultPostAlertMinutes.map { UsageState.defaultPostAlertMessage(minutes: $0) }
+        let decodedPreAlertVoiceIDs = try container.decodeIfPresent([String?].self, forKey: .preAlertVoiceIDs)
+            ?? Array(repeating: nil, count: preAlertMinutes.count)
+        preAlertVoiceIDs = decodedPreAlertVoiceIDs.map { $0 }
+        let decodedPostAlertVoiceIDs = try container.decodeIfPresent([String?].self, forKey: .postAlertVoiceIDs)
+            ?? Array(repeating: nil, count: postAlertMinutes.count)
+        postAlertVoiceIDs = decodedPostAlertVoiceIDs.map { $0 }
+        limitReachedAlertEnabled = try container.decodeIfPresent(Bool.self, forKey: .limitReachedAlertEnabled) ?? true
+        limitReachedAlertMessage = try container.decodeIfPresent(String.self, forKey: .limitReachedAlertMessage)
+            ?? UsageState.defaultLimitReachedAlertMessage
+        if let decodedVoiceID = try container.decodeIfPresent(String.self, forKey: .limitReachedAlertVoiceID) {
+            limitReachedAlertVoiceID = decodedVoiceID
+        } else {
+            limitReachedAlertVoiceID = nil
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -775,6 +1058,17 @@ struct UsageState: Codable {
         try container.encode(preAlertsSpoken, forKey: .preAlertsSpoken)
         try container.encode(postAlertsShown, forKey: .postAlertsShown)
         try container.encodeIfPresent(limitReachedAt, forKey: .limitReachedAt)
+        try container.encode(preAlertEnabled, forKey: .preAlertEnabled)
+        try container.encode(postAlertEnabled, forKey: .postAlertEnabled)
+        try container.encode(preAlertMessages, forKey: .preAlertMessages)
+        try container.encode(postAlertMessages, forKey: .postAlertMessages)
+        let encodedPreAlertVoiceIDs = preAlertVoiceIDs.map { $0 as String? }
+        let encodedPostAlertVoiceIDs = postAlertVoiceIDs.map { $0 as String? }
+        try container.encode(encodedPreAlertVoiceIDs, forKey: .preAlertVoiceIDs)
+        try container.encode(encodedPostAlertVoiceIDs, forKey: .postAlertVoiceIDs)
+        try container.encode(limitReachedAlertEnabled, forKey: .limitReachedAlertEnabled)
+        try container.encode(limitReachedAlertMessage, forKey: .limitReachedAlertMessage)
+        try container.encodeIfPresent(limitReachedAlertVoiceID as String?, forKey: .limitReachedAlertVoiceID)
     }
 
     static func load() -> UsageState {
@@ -798,7 +1092,16 @@ struct UsageState: Codable {
                           postAlertMinutes: UsageState.defaultPostAlertMinutes,
                           preAlertsSpoken: Array(repeating: false, count: UsageState.defaultPreAlertMinutes.count),
                           postAlertsShown: Array(repeating: false, count: UsageState.defaultPostAlertMinutes.count),
-                          limitReachedAt: nil)
+                          limitReachedAt: nil,
+                          preAlertEnabled: UsageState.defaultPreAlertEnabled,
+                          postAlertEnabled: UsageState.defaultPostAlertEnabled,
+                          preAlertMessages: UsageState.defaultPreAlertMinutes.map { UsageState.defaultPreAlertMessage(minutes: $0) },
+                          postAlertMessages: UsageState.defaultPostAlertMinutes.map { UsageState.defaultPostAlertMessage(minutes: $0) },
+                          preAlertVoiceIDs: Array(repeating: nil, count: UsageState.defaultPreAlertMinutes.count),
+                          postAlertVoiceIDs: Array(repeating: nil, count: UsageState.defaultPostAlertMinutes.count),
+                          limitReachedAlertEnabled: true,
+                          limitReachedAlertMessage: UsageState.defaultLimitReachedAlertMessage,
+                          limitReachedAlertVoiceID: nil)
     }
 
     static func save(_ state: UsageState) {
@@ -824,6 +1127,17 @@ struct UsageState: Codable {
     static let defaultMaxAnnoyancePopups = 5
     static let defaultPreAlertMinutes = [15, 5, 1]
     static let defaultPostAlertMinutes = [1, 3, 5, 10, 15]
+    static let defaultPreAlertEnabled = [true, true, true]
+    static let defaultPostAlertEnabled = [true, true, true, true, true]
+    static let defaultLimitReachedAlertMessage = "Screen time is up. Please take a break."
+
+    static func defaultPreAlertMessage(minutes: Int) -> String {
+        "\(minutes) minutes remaining."
+    }
+
+    static func defaultPostAlertMessage(minutes: Int) -> String {
+        "\(minutes) minutes over your limit. Please take a break."
+    }
 }
 
 extension Array {

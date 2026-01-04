@@ -313,10 +313,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if speechSynthesizer.isSpeaking {
             speechSynthesizer.stopSpeaking()
         }
-        if let voiceID,
-           let voiceName = NSSpeechSynthesizer.VoiceName(rawValue: voiceID),
-           NSSpeechSynthesizer.availableVoices.contains(voiceName) {
-            speechSynthesizer.setVoice(voiceName)
+        if let voiceID {
+            let voiceName = NSSpeechSynthesizer.VoiceName(rawValue: voiceID)
+            if NSSpeechSynthesizer.availableVoices.contains(voiceName) {
+                speechSynthesizer.setVoice(voiceName)
+            } else {
+                speechSynthesizer.setVoice(nil)
+            }
         } else {
             speechSynthesizer.setVoice(nil)
         }

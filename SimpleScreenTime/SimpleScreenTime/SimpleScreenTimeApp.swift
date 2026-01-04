@@ -313,8 +313,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if speechSynthesizer.isSpeaking {
             speechSynthesizer.stopSpeaking()
         }
-        if let voiceID, NSSpeechSynthesizer.availableVoices.contains(voiceID) {
-            speechSynthesizer.setVoice(voiceID)
+        if let voiceID,
+           let voiceName = NSSpeechSynthesizer.VoiceName(rawValue: voiceID),
+           NSSpeechSynthesizer.availableVoices.contains(voiceName) {
+            speechSynthesizer.setVoice(voiceName)
         } else {
             speechSynthesizer.setVoice(nil)
         }
@@ -533,8 +535,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var options: [(String, String?)] = [("System Default", nil)]
             let voices = NSSpeechSynthesizer.availableVoices.compactMap { voiceID -> (String, String?) in
                 let attrs = NSSpeechSynthesizer.attributes(forVoice: voiceID)
-                let name = attrs[NSSpeechSynthesizer.VoiceAttributeKey.name] as? String ?? voiceID
-                return (name, voiceID)
+                let name = attrs[NSSpeechSynthesizer.VoiceAttributeKey.name] as? String ?? voiceID.rawValue
+                return (name, voiceID.rawValue)
             }.sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
             options.append(contentsOf: voices)
             return options

@@ -467,40 +467,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         minField.stringValue = "\(config.minutesAfterExpiry)"
         view.addSubview(minField)
 
-        // Audio options with radio buttons
+        // Audio options with radio buttons using NSPopUpButton for simplicity
         let audioLabel = NSTextField(labelWithString: "Alert Sound:")
         audioLabel.frame = NSRect(x: 10, y: 160, width: 100, height: 20)
         view.addSubview(audioLabel)
 
-        // Create radio button group (they need to be in the same matrix to be mutually exclusive)
-        let radioMatrix = NSMatrix(frame: NSRect(x: 10, y: 110, width: 430, height: 45))
-        radioMatrix.mode = .radio
-        radioMatrix.cellSize = NSSize(width: 430, height: 15)
-        radioMatrix.renewRows(3, columns: 1)
-
-        let defaultBeepCell = radioMatrix.cell(atRow: 0, column: 0) as! NSButtonCell
-        defaultBeepCell.title = "Default Beep"
-        defaultBeepCell.setButtonType(.radio)
-
-        let customFileCell = radioMatrix.cell(atRow: 1, column: 0) as! NSButtonCell
-        customFileCell.title = "Custom Sound File"
-        customFileCell.setButtonType(.radio)
-
-        let speakCell = radioMatrix.cell(atRow: 2, column: 0) as! NSButtonCell
-        speakCell.title = "Speak Message (Text-to-Speech)"
-        speakCell.setButtonType(.radio)
+        let audioTypePopup = NSPopUpButton(frame: NSRect(x: 10, y: 130, width: 430, height: 24))
+        audioTypePopup.removeAllItems()
+        audioTypePopup.addItem(withTitle: "Default Beep")
+        audioTypePopup.addItem(withTitle: "Custom Sound File")
+        audioTypePopup.addItem(withTitle: "Speak Message (Text-to-Speech)")
 
         // Select current option
         switch config.audioType {
         case .defaultBeep:
-            radioMatrix.selectCell(atRow: 0, column: 0)
+            audioTypePopup.selectItem(at: 0)
         case .customFile:
-            radioMatrix.selectCell(atRow: 1, column: 0)
+            audioTypePopup.selectItem(at: 1)
         case .speakMessage:
-            radioMatrix.selectCell(atRow: 2, column: 0)
+            audioTypePopup.selectItem(at: 2)
         }
 
-        view.addSubview(radioMatrix)
+        view.addSubview(audioTypePopup)
 
         // Custom sound file selection
         let soundFileLabel = NSTextField(labelWithString: config.customSoundFileName ?? "No file selected")
@@ -576,9 +564,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 config.minutesAfterExpiry = minutes
             }
 
-            // Determine selected audio type from radio matrix
-            let selectedRow = radioMatrix.selectedRow
-            switch selectedRow {
+            // Determine selected audio type from popup
+            let selectedIndex = audioTypePopup.indexOfSelectedItem
+            switch selectedIndex {
             case 0:
                 config.audioType = .defaultBeep
             case 1:

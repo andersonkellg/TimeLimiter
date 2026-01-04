@@ -317,6 +317,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let maxAnnoyancePopups = max(0, state.maxAnnoyancePopups)
 
         let postAlertMinutes = normalizedPostAlertMinutes()
+        guard let limitReachedAt = state.limitReachedAt else { return }
+        guard popupsShownToday < maxAnnoyancePopups else { return }
         guard let nextIndex = postAlertMinutes.indices.first(where: { index in
             let threshold = TimeInterval(postAlertMinutes[index] * 60)
             return !state.postAlertsShown[index] && now.timeIntervalSince(limitReachedAt) >= threshold
@@ -325,6 +327,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         state.postAlertsShown[nextIndex] = true
+        popupsShownToday += 1
+        state.popupsShownToday = popupsShownToday
+        state.lastPopupTime = now
         UsageState.save(state)
 
         let alert = NSAlert()
@@ -651,6 +656,11 @@ struct UsageState: Codable {
     var preAlert15Minutes: Int
     var preAlert5Minutes: Int
     var maxAnnoyancePopups: Int
+    var preAlertMinutes: [Int]
+    var postAlertMinutes: [Int]
+    var preAlertsSpoken: [Bool]
+    var postAlertsShown: [Bool]
+    var limitReachedAt: Date?
 
     private enum CodingKeys: String, CodingKey {
         case dayStart
@@ -665,6 +675,11 @@ struct UsageState: Codable {
         case preAlert15Minutes
         case preAlert5Minutes
         case maxAnnoyancePopups
+        case preAlertMinutes
+        case postAlertMinutes
+        case preAlertsSpoken
+        case postAlertsShown
+        case limitReachedAt
     }
 
     init(dayStart: Date,
@@ -678,7 +693,12 @@ struct UsageState: Codable {
          spokePostAlert: Bool,
          preAlert15Minutes: Int,
          preAlert5Minutes: Int,
-         maxAnnoyancePopups: Int) {
+         maxAnnoyancePopups: Int,
+         preAlertMinutes: [Int],
+         postAlertMinutes: [Int],
+         preAlertsSpoken: [Bool],
+         postAlertsShown: [Bool],
+         limitReachedAt: Date?) {
         self.dayStart = dayStart
         self.secondsUsedToday = secondsUsedToday
         self.didHitLimitToday = didHitLimitToday
@@ -691,6 +711,11 @@ struct UsageState: Codable {
         self.preAlert15Minutes = preAlert15Minutes
         self.preAlert5Minutes = preAlert5Minutes
         self.maxAnnoyancePopups = maxAnnoyancePopups
+        self.preAlertMinutes = preAlertMinutes
+        self.postAlertMinutes = postAlertMinutes
+        self.preAlertsSpoken = preAlertsSpoken
+        self.postAlertsShown = postAlertsShown
+        self.limitReachedAt = limitReachedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -707,6 +732,11 @@ struct UsageState: Codable {
         preAlert15Minutes = try container.decodeIfPresent(Int.self, forKey: .preAlert15Minutes) ?? UsageState.defaultPreAlert15Minutes
         preAlert5Minutes = try container.decodeIfPresent(Int.self, forKey: .preAlert5Minutes) ?? UsageState.defaultPreAlert5Minutes
         maxAnnoyancePopups = try container.decodeIfPresent(Int.self, forKey: .maxAnnoyancePopups) ?? UsageState.defaultMaxAnnoyancePopups
+        preAlertMinutes = try container.decodeIfPresent([Int].self, forKey: .preAlertMinutes) ?? UsageState.defaultPreAlertMinutes
+        postAlertMinutes = try container.decodeIfPresent([Int].self, forKey: .postAlertMinutes) ?? UsageState.defaultPostAlertMinutes
+        preAlertsSpoken = try container.decodeIfPresent([Bool].self, forKey: .preAlertsSpoken) ?? Array(repeating: false, count: preAlertMinutes.count)
+        postAlertsShown = try container.decodeIfPresent([Bool].self, forKey: .postAlertsShown) ?? Array(repeating: false, count: postAlertMinutes.count)
+        limitReachedAt = try container.decodeIfPresent(Date.self, forKey: .limitReachedAt)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -723,6 +753,11 @@ struct UsageState: Codable {
         try container.encode(preAlert15Minutes, forKey: .preAlert15Minutes)
         try container.encode(preAlert5Minutes, forKey: .preAlert5Minutes)
         try container.encode(maxAnnoyancePopups, forKey: .maxAnnoyancePopups)
+        try container.encode(preAlertMinutes, forKey: .preAlertMinutes)
+        try container.encode(postAlertMinutes, forKey: .postAlertMinutes)
+        try container.encode(preAlertsSpoken, forKey: .preAlertsSpoken)
+        try container.encode(postAlertsShown, forKey: .postAlertsShown)
+        try container.encodeIfPresent(limitReachedAt, forKey: .limitReachedAt)
     }
 
     static func load() -> UsageState {
@@ -741,7 +776,12 @@ struct UsageState: Codable {
                           spokePostAlert: false,
                           preAlert15Minutes: UsageState.defaultPreAlert15Minutes,
                           preAlert5Minutes: UsageState.defaultPreAlert5Minutes,
-                          maxAnnoyancePopups: UsageState.defaultMaxAnnoyancePopups)
+                          maxAnnoyancePopups: UsageState.defaultMaxAnnoyancePopups,
+                          preAlertMinutes: UsageState.defaultPreAlertMinutes,
+                          postAlertMinutes: UsageState.defaultPostAlertMinutes,
+                          preAlertsSpoken: Array(repeating: false, count: UsageState.defaultPreAlertMinutes.count),
+                          postAlertsShown: Array(repeating: false, count: UsageState.defaultPostAlertMinutes.count),
+                          limitReachedAt: nil)
     }
 
     static func save(_ state: UsageState) {
@@ -765,6 +805,8 @@ struct UsageState: Codable {
     static let defaultPreAlert15Minutes = 15
     static let defaultPreAlert5Minutes = 5
     static let defaultMaxAnnoyancePopups = 5
+    static let defaultPreAlertMinutes = [15, 5, 1]
+    static let defaultPostAlertMinutes = [1, 3, 5, 10, 15]
 }
 
 enum Logger {

@@ -537,8 +537,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         view.addSubview(voicePopup)
 
-        // Test speak button
-        let testSpeakBtn = NSButton(title: "Test", target: nil, action: nil)
+        // Test speak button - create helper to capture references
+        let testHelper = TestSpeechHelper(speechField: speechField, voicePopup: voicePopup, delegate: self)
+        let testSpeakBtn = NSButton(title: "Test", target: testHelper, action: #selector(TestSpeechHelper.testSpeech))
         testSpeakBtn.frame = NSRect(x: 340, y: 0, width: 100, height: 24)
         testSpeakBtn.bezelStyle = .rounded
         view.addSubview(testSpeakBtn)
@@ -552,36 +553,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         chooseSoundBtn.action = #selector(chooseAudioFile(_:))
         chooseSoundBtn.tag = alertId  // Store alertId for the callback
 
-        // Handle "Test" button for speech
-        testSpeakBtn.target = self
-        testSpeakBtn.action = #selector(testSpeech(_:))
-
         let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            // Save changes
-            config.message = msgField.string
-            if let minutes = Int(minField.stringValue), minutes >= 0 {
-                config.minutesAfterExpiry = minutes
-            }
 
-            // Determine selected audio type from popup
-            let selectedIndex = audioTypePopup.indexOfSelectedItem
-            switch selectedIndex {
-            case 0:
-                config.audioType = .defaultBeep
-            case 1:
-                config.audioType = .customFile
-            case 2:
-                config.audioType = .speakMessage
-                config.speechMessage = speechField.stringValue.isEmpty ? nil : speechField.stringValue
-                config.voiceName = voicePopup.titleOfSelectedItem
-            default:
-                config.audioType = .defaultBeep
-            }
+        // Keep testHelper alive during modal
+        withExtendedLifetime(testHelper) {
+            if response == .alertFirstButtonReturn {
+                // Save changes
+                config.message = msgField.string
+                if let minutes = Int(minField.stringValue), minutes >= 0 {
+                    config.minutesAfterExpiry = minutes
+                }
 
-            alertsConfig.alerts[index] = config
-            AlertsConfig.save(alertsConfig)
-            log("Alert[\(alertId)]Updated")
+                // Determine selected audio type from popup
+                let selectedIndex = audioTypePopup.indexOfSelectedItem
+                switch selectedIndex {
+                case 0:
+                    config.audioType = .defaultBeep
+                case 1:
+                    config.audioType = .customFile
+                case 2:
+                    config.audioType = .speakMessage
+                    config.speechMessage = speechField.stringValue.isEmpty ? nil : speechField.stringValue
+                    config.voiceName = voicePopup.titleOfSelectedItem
+                default:
+                    config.audioType = .defaultBeep
+                }
+
+                alertsConfig.alerts[index] = config
+                AlertsConfig.save(alertsConfig)
+                log("Alert[\(alertId)]Updated")
+            }
         }
     }
 
@@ -622,33 +623,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func testSpeech(_ sender: NSButton) {
-        // Find the speech field and voice popup in the current alert
-        if let alertWindow = NSApp.windows.first(where: { $0.isVisible }),
-           let contentView = alertWindow.contentView {
-
-            var speechText = ""
-            var voiceName = ""
-
-            // Find the speech text field
-            for subview in contentView.subviews {
-                if let textField = subview as? NSTextField,
-                   textField.placeholderString == "Enter message to speak aloud..." {
-                    speechText = textField.stringValue
-                }
-                if let popup = subview as? NSPopUpButton,
-                   let title = popup.titleOfSelectedItem {
-                    voiceName = title
-                }
-            }
-
-            if !speechText.isEmpty {
-                speakMessage(speechText, voiceName: voiceName)
-            }
-        }
-    }
-
-    private func speakMessage(_ message: String, voiceName: String?) {
+    func speakMessage(_ message: String, voiceName: String?) {
         let synthesizer = NSSpeechSynthesizer()
 
         // Find the voice identifier for the given name
@@ -804,6 +779,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Logger.append(event: event,
                       used: Int(state.secondsUsedToday),
                       remaining: Int(remainingSeconds()))
+    }
+}
+
+// Helper class to handle Test button for speech
+class TestSpeechHelper: NSObject {
+    weak var speechField: NSTextField?
+    weak var voicePopup: NSPopUpButton?
+    weak var delegate: AppDelegate?
+
+    init(speechField: NSTextField, voicePopup: NSPopUpButton, delegate: AppDelegate) {
+        self.speechField = speechField
+        self.voicePopup = voicePopup
+        self.delegate = delegate
+        super.init()
+    }
+
+    @objc func testSpeech() {
+        guard let text = speechField?.stringValue, !text.isEmpty else { return }
+        let voice = voicePopup?.titleOfSelectedItem
+        delegate?.speakMessage(text, voiceName: voice)
     }
 }
 

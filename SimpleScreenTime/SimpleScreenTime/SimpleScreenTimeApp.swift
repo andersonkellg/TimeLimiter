@@ -18,7 +18,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // ====================
 
     private var statusItem: NSStatusItem!
+    private var countdownMenuItem: NSMenuItem!
+    private var countdownLabel: NSTextField!
+    private var progressIndicator: NSProgressIndicator!
     private var timer: Timer?
+    private let speechSynthesizer = NSSpeechSynthesizer()
 
     private var state = UsageState.load()
     private var lastTick = Date()
@@ -33,6 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         log("AppLaunched")
         normalizeForToday()
+        popupsShownToday = state.popupsShownToday
+        lastPopupTime = state.lastPopupTime
 
         lastTick = Date()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -64,13 +70,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupMenu() {
         let menu = NSMenu()
+        setupCountdownMenuItem(in: menu)
         menu.addItem(NSMenuItem(title: "Edit Today's Limit (PIN)", action: #selector(editTodayLimit), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Reset Today's Time (PIN)", action: #selector(resetWithPin), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Open Log Folder", action: #selector(openLogFolder), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit (PIN)", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
+    }
+
+    private func setupCountdownMenuItem(in menu: NSMenu) {
+        countdownLabel = NSTextField(labelWithString: "Time remaining: --:--")
+        countdownLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        countdownLabel.alignment = .center
+
+        progressIndicator = NSProgressIndicator()
+        progressIndicator.isIndeterminate = false
+        progressIndicator.minValue = 0
+        progressIndicator.maxValue = 1
+        progressIndicator.doubleValue = 0
+        progressIndicator.controlSize = .small
+        progressIndicator.style = .bar
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 36))
+        countdownLabel.frame = NSRect(x: 0, y: 16, width: 240, height: 16)
+        progressIndicator.frame = NSRect(x: 12, y: 2, width: 216, height: 10)
+        container.addSubview(countdownLabel)
+        container.addSubview(progressIndicator)
+
+        countdownMenuItem = NSMenuItem()
+        countdownMenuItem.view = container
+        menu.addItem(countdownMenuItem)
+        menu.addItem(NSMenuItem.separator())
     }
 
     private func setupObservers() {
@@ -135,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if remainingSeconds() <= 0 && !state.didHitLimitToday {
             state.didHitLimitToday = true
             log("LimitReached")
+            speakPostAlertIfNeeded()
         }
 
         UsageState.save(state)
@@ -150,6 +183,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.todayLimitOverride = nil  // Reset to default limit for new day
             popupsShownToday = 0  // Reset popup counter for new day
             lastPopupTime = nil
+            state.popupsShownToday = 0
+            state.lastPopupTime = nil
+            state.spokePreAlert15 = false
+            state.spokePreAlert5 = false
+            state.spokePostAlert = false
             log("NewDayReset")
             UsageState.save(state)
         }
@@ -188,6 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             // Show periodic popups
+            speakPostAlertIfNeeded()
             showAnnoyingPopupIfNeeded()
 
         } else if mins <= 5 {
@@ -197,6 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 button.layer?.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.6).cgColor
                 button.layer?.borderColor = NSColor.systemOrange.cgColor
             }
+            speakPreAlertIfNeeded(remainingSeconds: rem)
 
         } else if mins <= 15 {
             // Caution mode - yellow
@@ -205,6 +245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 button.layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.5).cgColor
                 button.layer?.borderColor = NSColor.systemYellow.cgColor
             }
+            speakPreAlertIfNeeded(remainingSeconds: rem)
 
         } else {
             // Normal mode - green
@@ -214,6 +255,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 button.layer?.borderColor = NSColor.systemGreen.cgColor
             }
         }
+
+        updateCountdownMenu(remainingSeconds: rem)
+    }
+
+    private func updateCountdownMenu(remainingSeconds: TimeInterval) {
+        guard countdownLabel != nil else { return }
+        let clampedRemaining = max(0, remainingSeconds)
+        let totalSeconds = max(1, effectiveDailyLimit())
+        let remainingInt = Int(clampedRemaining.rounded(.down))
+        let minutes = remainingInt / 60
+        let seconds = remainingInt % 60
+        countdownLabel.stringValue = String(format: "Time remaining: %02d:%02d", minutes, seconds)
+        let progress = min(1, max(0, state.secondsUsedToday / totalSeconds))
+        progressIndicator.doubleValue = progress
+    }
+
+    private func speakPreAlertIfNeeded(remainingSeconds: TimeInterval) {
+        if remainingSeconds <= 5 * 60, !state.spokePreAlert5 {
+            state.spokePreAlert5 = true
+            speak("Five minutes remaining.")
+            log("SpokenPreAlert5")
+            UsageState.save(state)
+            return
+        }
+        if remainingSeconds <= 15 * 60, !state.spokePreAlert15 {
+            state.spokePreAlert15 = true
+            speak("Fifteen minutes remaining.")
+            log("SpokenPreAlert15")
+            UsageState.save(state)
+        }
+    }
+
+    private func speakPostAlertIfNeeded() {
+        guard !state.spokePostAlert else { return }
+        state.spokePostAlert = true
+        speak("Screen time is up. Please take a break.")
+        log("SpokenPostAlert")
+        UsageState.save(state)
+    }
+
+    private func speak(_ text: String) {
+        if speechSynthesizer.isSpeaking {
+            speechSynthesizer.stopSpeaking()
+        }
+        speechSynthesizer.startSpeaking(text)
     }
 
     private func showAnnoyingPopupIfNeeded() {
@@ -233,6 +319,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         lastPopupTime = now
         popupsShownToday += 1
+        state.lastPopupTime = lastPopupTime
+        state.popupsShownToday = popupsShownToday
 
         let remaining = maxAnnoyancePopups - popupsShownToday
 
@@ -345,6 +433,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.didHitLimitToday = false
             popupsShownToday = 0  // Reset popup counter
             lastPopupTime = nil
+            state.popupsShownToday = 0
+            state.lastPopupTime = nil
+            state.spokePreAlert15 = false
+            state.spokePreAlert5 = false
+            state.spokePostAlert = false
             UsageState.save(state)
             log("ManualResetOK")
             updateUI()
@@ -361,7 +454,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() {
-        NSApp.terminate(nil)
+        let alert = NSAlert()
+        alert.messageText = "Quit SimpleScreenTime?"
+        alert.informativeText = "Enter PIN to quit."
+        alert.alertStyle = .warning
+
+        let pinField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        pinField.placeholderString = "PIN"
+        alert.accessoryView = pinField
+
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+
+        let resp = alert.runModal()
+        guard resp == .alertFirstButtonReturn else { return }
+
+        if pinField.stringValue == hardCodedPin {
+            log("QuitWithPIN")
+            NSApp.terminate(nil)
+        } else {
+            log("QuitBADPIN")
+            let fail = NSAlert()
+            fail.messageText = "Wrong PIN"
+            fail.runModal()
+        }
     }
 
     private func log(_ event: String) {
@@ -376,6 +492,69 @@ struct UsageState: Codable {
     var secondsUsedToday: TimeInterval
     var didHitLimitToday: Bool
     var todayLimitOverride: TimeInterval?  // Optional override for today's limit
+    var popupsShownToday: Int
+    var lastPopupTime: Date?
+    var spokePreAlert15: Bool
+    var spokePreAlert5: Bool
+    var spokePostAlert: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case dayStart
+        case secondsUsedToday
+        case didHitLimitToday
+        case todayLimitOverride
+        case popupsShownToday
+        case lastPopupTime
+        case spokePreAlert15
+        case spokePreAlert5
+        case spokePostAlert
+    }
+
+    init(dayStart: Date,
+         secondsUsedToday: TimeInterval,
+         didHitLimitToday: Bool,
+         todayLimitOverride: TimeInterval?,
+         popupsShownToday: Int,
+         lastPopupTime: Date?,
+         spokePreAlert15: Bool,
+         spokePreAlert5: Bool,
+         spokePostAlert: Bool) {
+        self.dayStart = dayStart
+        self.secondsUsedToday = secondsUsedToday
+        self.didHitLimitToday = didHitLimitToday
+        self.todayLimitOverride = todayLimitOverride
+        self.popupsShownToday = popupsShownToday
+        self.lastPopupTime = lastPopupTime
+        self.spokePreAlert15 = spokePreAlert15
+        self.spokePreAlert5 = spokePreAlert5
+        self.spokePostAlert = spokePostAlert
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        dayStart = try container.decode(Date.self, forKey: .dayStart)
+        secondsUsedToday = try container.decode(TimeInterval.self, forKey: .secondsUsedToday)
+        didHitLimitToday = try container.decode(Bool.self, forKey: .didHitLimitToday)
+        todayLimitOverride = try container.decodeIfPresent(TimeInterval.self, forKey: .todayLimitOverride)
+        popupsShownToday = try container.decodeIfPresent(Int.self, forKey: .popupsShownToday) ?? 0
+        lastPopupTime = try container.decodeIfPresent(Date.self, forKey: .lastPopupTime)
+        spokePreAlert15 = try container.decodeIfPresent(Bool.self, forKey: .spokePreAlert15) ?? false
+        spokePreAlert5 = try container.decodeIfPresent(Bool.self, forKey: .spokePreAlert5) ?? false
+        spokePostAlert = try container.decodeIfPresent(Bool.self, forKey: .spokePostAlert) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(dayStart, forKey: .dayStart)
+        try container.encode(secondsUsedToday, forKey: .secondsUsedToday)
+        try container.encode(didHitLimitToday, forKey: .didHitLimitToday)
+        try container.encodeIfPresent(todayLimitOverride, forKey: .todayLimitOverride)
+        try container.encode(popupsShownToday, forKey: .popupsShownToday)
+        try container.encodeIfPresent(lastPopupTime, forKey: .lastPopupTime)
+        try container.encode(spokePreAlert15, forKey: .spokePreAlert15)
+        try container.encode(spokePreAlert5, forKey: .spokePreAlert5)
+        try container.encode(spokePostAlert, forKey: .spokePostAlert)
+    }
 
     static func load() -> UsageState {
         if let data = try? Data(contentsOf: stateURL),
@@ -385,7 +564,12 @@ struct UsageState: Codable {
         return UsageState(dayStart: Calendar.current.startOfDay(for: Date()),
                           secondsUsedToday: 0,
                           didHitLimitToday: false,
-                          todayLimitOverride: nil)
+                          todayLimitOverride: nil,
+                          popupsShownToday: 0,
+                          lastPopupTime: nil,
+                          spokePreAlert15: false,
+                          spokePreAlert5: false,
+                          spokePostAlert: false)
     }
 
     static func save(_ state: UsageState) {
